@@ -2,6 +2,7 @@
 
 REQUIRED_COMMANDS=(
 	dialog
+	expect
 )
 
 for CMD in ${REQUIRED_COMMANDS[@]}; do
