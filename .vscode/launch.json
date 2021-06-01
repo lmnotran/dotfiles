@@ -1,0 +1,16 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Sleepy-demo 4161a,4180b",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "args": ["--board", "brd4161a,brd4180b", "--app", "sleepy-demo-mtd,sleepy-demo-ftd"],
+            "console": "integratedTerminal"
+        }
+    ]
+}
