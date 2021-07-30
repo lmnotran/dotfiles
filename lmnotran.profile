@@ -1,6 +1,14 @@
-#!/bin/zsh
+#!/bin/bash
 
-REPO_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+if [[ -n ${BASH_SOURCE[0]} ]]; then
+    script_path="${BASH_SOURCE[0]}"
+else
+    script_path="$0"
+fi
+
+REPO_DIR="$(dirname "$(realpath "$script_path")")"
+# echo REPO_DIR = "${REPO_DIR}"
+
 export DOTFILES=$REPO_DIR
 export DOTFILES_SILABS_DIR=$REPO_DIR/silabs
 source $REPO_DIR/utils/bash_utils.sh
