@@ -4,12 +4,21 @@
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
+
         {
             "name": "Python: Sleepy-demo 4161a,4180b",
             "type": "python",
             "request": "launch",
             "program": "${file}",
             "args": ["--board", "brd4161a,brd4180b", "--app", "sleepy-demo-mtd,sleepy-demo-ftd"],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "su_nexus_dl",
+            "type": "python",
+            "request": "launch",
+            "program": "silabs/bash-scripts/su_nexus_dl.py",
+            "args": ["https://nexus.silabs.com/repository/gecko-sdk/develop/21q4/821/build.xml"],
             "console": "integratedTerminal"
         }
     ]
