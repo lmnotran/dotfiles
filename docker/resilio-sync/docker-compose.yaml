@@ -1,0 +1,35 @@
+---
+version: "2.1"
+services:
+  resilio-sync:
+    image: lscr.io/linuxserver/resilio-sync
+    container_name: resilio-sync
+    environment:
+      - PUID=646887354
+      - PGID=33
+      - UMASK=002
+      - TZ=America/New_York
+      - VIRTUAL_HOST=sync.segfault.rip
+      - LETSENCRYPT_HOST=sync.segfault.rip
+      - VIRTUAL_PORT=8888
+    volumes:
+      - /home/mason:/home/mason
+      - /uhh/sync/sync-hole:/sync
+      - /Users/matran:/sync/matran
+      - config:/config
+      - /uhh/sync/downloads:/downloads
+    ports:
+      - 8888:8888
+      - 55555:55555
+    networks:
+      - nginx-proxy
+    restart: unless-stopped
+        
+networks:
+  default:
+  nginx-proxy:
+    external:
+      name: nginx-proxy
+
+volumes:
+  config: {}
