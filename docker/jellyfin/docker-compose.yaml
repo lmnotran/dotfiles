@@ -1,0 +1,48 @@
+---
+version: "3"
+services:
+  jellyfin:
+    image: lscr.io/linuxserver/jellyfin
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    container_name: jellyfin
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - PUID=1000
+      - PGID=33
+      - VERSION=latest
+      - TZ=America/New_York
+      - UMASK_SET=002
+      - VIRTUAL_HOST=jelly.segfault.rip
+      - VIRTUAL_PORT=8096
+      - LETSENCRYPT_HOST=jelly.segfault.rip
+    networks:
+      - nginx-proxy
+    ports:
+      - 8096:8096
+      - 8920:8920 #optional
+      - 7359:7359/udp #optional
+      - 1900:1900/udp #optional
+    volumes:
+      - config:/config
+      - /uhh/videos/anime:/data/anime
+      - /uhh/videos/movies:/data/movies
+      - /uhh/videos/tv:/data/tv
+      - /dev/shm/transcode:/config/data/transcodes
+      - /uhh:/uhh
+      - /wd-red-6tb:/wd-red-6tb
+    restart: unless-stopped
+
+networks:
+  default:
+  nginx-proxy:
+    external:
+      name: nginx-proxy
+
+volumes:
+  config: {}

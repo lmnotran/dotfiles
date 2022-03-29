@@ -1,0 +1,32 @@
+---
+version: "3"
+services:
+  plex:
+    image: lscr.io/linuxserver/plex
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    container_name: plex
+    network_mode: host
+    environment:
+      - PUID=1000
+      - PGID=33
+      - VERSION=latest
+      - PLEX_CLAIM=claim-djWRK_-tpCZxjFSuzydi
+      - TZ=America/New_York
+      - UMASK=002
+      - NVIDIA_VISIBLE_DEVICES=all
+
+    volumes:
+      - /uhh/plex-config:/config
+      - /uhh/videos/anime:/anime
+      - /uhh/videos/movies:/movies
+      - /uhh/videos/tv:/tv
+      - /dev/shm/transcode:/transcode
+      - /uhh:/uhh
+      - /wd-red-6tb:/wd-red-6tb
+    restart: unless-stopped
