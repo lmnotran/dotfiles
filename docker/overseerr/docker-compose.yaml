@@ -1,0 +1,30 @@
+---
+version: "3"
+
+volumes:
+        config: {}
+
+services:
+  overseerr:
+    image: linuxserver/overseerr:latest
+    container_name: overseerr
+    restart: unless-stopped
+    environment:
+      - TZ=America/New_York # Specify a timezone to use
+      - PUID=1000 # User ID to run as
+      - PGID=33 # Group ID to run as
+      - VIRTUAL_PORT=5055
+      - VIRTUAL_HOST=request.segfault.rip
+      - LETSENCRYPT_HOST=request.segfault.rip
+    volumes:
+      - config:/config # Contains all relevant configuration files.
+        #ports:
+            #  - 5055:5055/tcp # Web UI
+    networks:
+      - nginx-proxy
+networks:
+  default:
+  nginx-proxy:
+    external:
+      name: nginx-proxy
+
