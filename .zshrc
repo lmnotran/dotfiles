@@ -8,15 +8,11 @@ export ZSH="${HOME}/.oh-my-zsh"
 # load a random theme each time oh-my-zsh is loaded, in which case,
 # to know which specific one was loaded, run: echo $RANDOM_THEME
 # See https://github.com/ohmyzsh/ohmyzsh/wiki/Themes
-#ZSH_THEME="robbyrussell"
-
 ZSH_THEME="agnoster"
-
-#ZSH_THEME="powerlevel9k/powerlevel9k"
 
 # Set list of themes to pick from when loading at random
 # Setting this variable when ZSH_THEME=random will cause zsh to load
-# a theme from this variable instead of looking in ~/.oh-my-zsh/themes/
+# a theme from this variable instead of looking in $ZSH/themes/
 # If set to an empty array, this variable will have no effect.
 # ZSH_THEME_RANDOM_CANDIDATES=( "robbyrussell" "agnoster" )
 
@@ -37,7 +33,7 @@ ZSH_THEME="agnoster"
 # export UPDATE_ZSH_DAYS=13
 
 # Uncomment the following line if pasting URLs and other text is messed up.
-# DISABLE_MAGIC_FUNCTIONS=true
+# DISABLE_MAGIC_FUNCTIONS="true"
 
 # Uncomment the following line to disable colors in ls.
 # DISABLE_LS_COLORS="true"
@@ -68,11 +64,22 @@ ZSH_THEME="agnoster"
 # ZSH_CUSTOM=/path/to/new-custom-folder
 
 # Which plugins would you like to load?
-# Standard plugins can be found in ~/.oh-my-zsh/plugins/*
-# Custom plugins may be added to ~/.oh-my-zsh/custom/plugins/
+# Standard plugins can be found in $ZSH/plugins/
+# Custom plugins may be added to $ZSH_CUSTOM/plugins/
 # Example format: plugins=(rails git textmate ruby lighthouse)
 # Add wisely, as too many plugins slow down shell startup.
-plugins=(iterm2 git ssh-agent tmux fzf )
+plugins=(
+    git
+    fzf
+    ssh-agent
+    colored-man-pages
+    zsh-autosuggestions
+    zsh-syntax-highlighting
+    iterm2
+)
+
+bindkey '^ ' autosuggest-accept
+fpath+=${ZSH_CUSTOM:-${ZSH:-~/.oh-my-zsh}/custom}/plugins/zsh-completions/src
 
 source $ZSH/oh-my-zsh.sh
 
@@ -101,6 +108,10 @@ source $ZSH/oh-my-zsh.sh
 # Example aliases
 # alias zshconfig="mate ~/.zshrc"
 # alias ohmyzsh="mate ~/.oh-my-zsh"
+#
+export QT_GRAPHICSSYSTEM=native
+export GPG_TTY=$(tty)
+
 export PATH="/usr/local/opt/llvm/bin:$PATH"
 #export LDFLAGS='-L/usr/local/opt/llvm/lib -Wl,-rpath,/usr/local/opt/llvm/lib'
 export PATH="/usr/local/opt/grep/libexec/gnubin:$PATH"
@@ -129,29 +140,31 @@ export PATH=$PATH:/usr/local/Cellar/llvm@9/9.0.1_2/share/clang/
 export ZSH_TMUX_UNICODE=true
 
 # UC CLI
+export PATH=$PATH:~/repos/sl/uc_cli_$(hostname)
 export JAVA11_HOME=/Library/Java/JavaVirtualMachines/amazon-corretto-11.jdk/Contents/Home/
-export PATH=$PATH:/Users/matran/repos/sl/uc_cli_$(hostname)
 
-export TOOLCHAIN_DIR_OSX=/usr/local/Cellar/arm-none-eabi-gcc/9-2019-q4-major
-export ARM_GCC_DIR=/usr/local/Cellar/arm-none-eabi-gcc/9-2019-q4-major
-export ARM_GCC_DIR_OSX=/usr/local/Cellar/arm-none-eabi-gcc/9-2019-q4-major
-
-source ~/.bash_profile
+# export TOOLCHAIN_DIR_OSX=/usr/local/Cellar/arm-none-eabi-gcc/9-2019-q4-major
+# export ARM_GCC_DIR=/usr/local/Cellar/arm-none-eabi-gcc/9-2019-q4-major
+# export ARM_GCC_DIR_OSX=/usr/local/Cellar/arm-none-eabi-gcc/9-2019-q4-major
 
 export PATH=$PATH:/Applications/Commander.app/Contents/MacOS/
+
 function gi() { curl -sLw n https://www.toptal.com/developers/gitignore/api/$@ ;}
 
 export SUPER=~/repos/sl/super
-export OPENTHREAD_REPO_PATH=~/repos/openthread
+export SIMPLICITY_STUDIO_PATH=~/SimplicityStudio_v5
+export OPENTHREAD_REPO_PATH=~/repos/ot-efr32
+
+# Lmno dotfiles
 export LMNOTRAN_DOTFILES=~/repos/dotfiles
 source $LMNOTRAN_DOTFILES/lmnotran.profile
-export USERID=`id -u $USER`
 
-# export PATH="/usr/local/opt/python@3.9/Frameworks/Python.framework/Versions/3.9/bin:$PATH"
+export PATH="/home/$USER/.local/bin:$PATH"
+export PATH="/usr:$PATH"
+export PATH="/usr/local:$PATH"
+# source $LMNOTRAN_DOTFILES/silabs/profile/.rail-dev-env.profile
+umask 002
 
-export TCM_SIMPLICITYCOMMANDER=`which commander`
-export PYENV_ROOT="$HOME/.pyenv"
-export PATH="/usr/local/Cellar/m4/1.4.18/bin:$PATH"
-export PATH="$PYENV_ROOT/bin:$PATH"
-eval "$(pyenv init --path)"
-export DOCKER_BUILDKIT=0
+# Generated for envman. Do not edit.
+[ -s "$HOME/.config/envman/load.sh" ] && source "$HOME/.config/envman/load.sh"
+export GO111MODULE=on
