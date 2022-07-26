@@ -8,3 +8,15 @@ git clone https://github.com/zsh-users/zsh-syntax-highlighting.git ${ZSH_CUSTOM:
 
 # Fix perms
 compaudit | xargs chmod g-w,o-w
+
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    # Mac OSX
+
+    # Install brew
+    command -v brew || /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+    brew install coreutils grep fzf
+
+    /opt/homebrew/opt/fzf/install
+
+fi

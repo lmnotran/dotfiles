@@ -1,3 +1,4 @@
+
 # If you come from bash you might have to change your $PATH.
 # export PATH=$HOME/bin:/usr/local/bin:$PATH
 export TERM="xterm-256color"
@@ -109,62 +110,55 @@ source $ZSH/oh-my-zsh.sh
 # alias zshconfig="mate ~/.zshrc"
 # alias ohmyzsh="mate ~/.oh-my-zsh"
 #
+
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    # Mac OSX
+
+    # iTerm2 integration
+    test -e "${HOME}/.iterm2_shell_integration.zsh" && source "${HOME}/.iterm2_shell_integration.zsh" || true
+
+    # Add Visual Studio Code (code)
+    export PATH="$PATH:/Applications/Visual Studio Code.app/Contents/Resources/app/bin"
+
+    # use GNU grep
+    export PATH="/opt/homebrew/opt/grep/libexec/gnubin:$PATH"
+    export PATH="/usr/local/opt/grep/libexec/gnubin:$PATH"
+
+elif [[ "$OSTYPE" == "linux"* ]]; then
+    # Linux
+    :
+fi
+
 export QT_GRAPHICSSYSTEM=native
 export GPG_TTY=$(tty)
 
 export PATH="/usr/local/opt/llvm/bin:$PATH"
-#export LDFLAGS='-L/usr/local/opt/llvm/lib -Wl,-rpath,/usr/local/opt/llvm/lib'
-export PATH="/usr/local/opt/grep/libexec/gnubin:$PATH"
 
-test -e "${HOME}/.iterm2_shell_integration.zsh" && source "${HOME}/.iterm2_shell_integration.zsh" || true
 #source ~/.power9krc
-
-# ensure you compile 32bit binaries on a 64bit machine
-export E_CC='gcc -m32a'
-export E_CPP='g++ -m32'
-export E_LD='ld -m32'
-export JAVA_HOME=/Library/Java/JavaVirtualMachines/amazon-corretto-8.jdk/Contents/Home
-export META_UTIL_PATH=/Users/matran/repos/super
-
-#PATH and PYTHONPATH lead to the directory where your meta_util.py file is
-export PATH=$PATH:$SUPER
-export PYTHONPATH=$PYTHONPATH:$SUPER
-
-# Add SEGGER JLink to path
-export PATH=$PATH:/Applications/SEGGER/JLink/
-
-# Add run-clang-tidy to path
-export PATH=$PATH:/usr/local/Cellar/llvm@9/9.0.1_2/share/clang/
 
 #export ZSH_TMUX_ITERM2=true
 export ZSH_TMUX_UNICODE=true
 
-# UC CLI
-export PATH=$PATH:~/repos/sl/uc_cli_$(hostname)
-export JAVA11_HOME=/Library/Java/JavaVirtualMachines/amazon-corretto-11.jdk/Contents/Home/
-
-# export TOOLCHAIN_DIR_OSX=/usr/local/Cellar/arm-none-eabi-gcc/9-2019-q4-major
-# export ARM_GCC_DIR=/usr/local/Cellar/arm-none-eabi-gcc/9-2019-q4-major
-# export ARM_GCC_DIR_OSX=/usr/local/Cellar/arm-none-eabi-gcc/9-2019-q4-major
-
-export PATH=$PATH:/Applications/Commander.app/Contents/MacOS/
-
-function gi() { curl -sLw n https://www.toptal.com/developers/gitignore/api/$@ ;}
-
-export SUPER=~/repos/sl/super
-export SIMPLICITY_STUDIO_PATH=~/SimplicityStudio_v5
-export OPENTHREAD_REPO_PATH=~/repos/ot-efr32
 
 # Lmno dotfiles
 export LMNOTRAN_DOTFILES=~/repos/dotfiles
 source $LMNOTRAN_DOTFILES/lmnotran.profile
 
+if [[ "$HOST" == "mac0014605"* ]]; then
+    # Work Laptop
+    source $LMNOTRAN_DOTFILES/silabs.zshrc
+fi
+
 export PATH="/home/$USER/.local/bin:$PATH"
 export PATH="/usr:$PATH"
 export PATH="/usr/local:$PATH"
-# source $LMNOTRAN_DOTFILES/silabs/profile/.rail-dev-env.profile
+
 umask 002
 
 # Generated for envman. Do not edit.
 [ -s "$HOME/.config/envman/load.sh" ] && source "$HOME/.config/envman/load.sh"
-export GO111MODULE=on
+# export GO111MODULE=on
+
+[ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
+
+
