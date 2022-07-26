@@ -10,9 +10,13 @@ REPO_DIR="$(dirname "$(realpath "$script_path")")"
 # echo REPO_DIR = "${REPO_DIR}"
 
 export DOTFILES=$REPO_DIR
-export DOTFILES_prev_DIR=$REPO_DIR/prev
 source $REPO_DIR/utils/bash_utils.sh
 source $REPO_DIR/utils/network.sh
 source $REPO_DIR/utils/pushover.sh
-source $REPO_DIR/prev/env.profile
-source $REPO_DIR/prev/prev.profile
+
+if [[ "$HOST" == "mac0014605"* ]]; then
+    # Work laptop
+    export DOTFILES_prev_DIR=$REPO_DIR/prev
+    source $REPO_DIR/prev/env.profile
+    source $REPO_DIR/prev/prev.profile
+fi
