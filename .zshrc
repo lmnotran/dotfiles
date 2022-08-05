@@ -149,7 +149,7 @@ export ZSH_TMUX_UNICODE=true
 export LMNOTRAN_DOTFILES=~/repos/dotfiles
 source $LMNOTRAN_DOTFILES/lmnotran.profile
 
-if [[ "$HOST" == "mac0014605"* ]]; then
+if [[ "$HOST" == "mac0014605"* ]] || [[ "$HOST" == "matran-ubuntu"* ]]; then
     # Work Laptop
     source $LMNOTRAN_DOTFILES/silabs.zshrc
 fi
