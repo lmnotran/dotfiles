@@ -1,0 +1,19 @@
+---
+version: "3"
+services:
+  openspeedtest:
+    image: openspeedtest/latest
+    container_name: openspeedtest
+    environment:
+      - VIRTUAL_HOST=speedtest.segfault.rip
+      - VIRTUAL_PORT=3000
+      - LETSENCRYPT_HOST=speedtest.segfault.rip
+    networks:
+      - nginx-proxy
+    restart: unless-stopped
+
+networks:
+  default:
+  nginx-proxy:
+    external:
+      name: nginx-proxy

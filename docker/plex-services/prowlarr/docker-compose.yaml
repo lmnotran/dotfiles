@@ -1,0 +1,33 @@
+---
+version: "3"
+services:
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:develop
+    container_name: prowlarr
+    environment:
+      - PUID=1000
+      - PGID=33
+      - TZ=America/New_York
+      - LETSENCRYPT_HOST=prowlarr.segfault.rip
+      - VIRTUAL_HOST=prowlarr.segfault.rip
+      - VIRTUAL_PORT=9696
+    networks:
+      - nginx-proxy
+      - plex-services
+    ports:
+      - 9696:9696
+    volumes:
+      - config:/config
+    restart: unless-stopped
+
+networks:
+  nginx-proxy:
+    external:
+      name: nginx-proxy
+  plex-services:
+    external:
+      name: plex-services
+
+volumes:
+    config: {}
+

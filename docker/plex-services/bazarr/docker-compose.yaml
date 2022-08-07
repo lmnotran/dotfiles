@@ -1,0 +1,36 @@
+---
+version: "3"
+services:
+  bazarr:
+    image: lscr.io/linuxserver/bazarr
+    container_name: bazarr
+    environment:
+      - PUID=1000
+      - PGID=33
+      - TZ=America/New_York
+      - LETSENCRYPT_HOST=bazarr.segfault.rip
+      - VIRTUAL_HOST=bazarr.segfault.rip
+      - VIRTUAL_PORT=6767
+    networks:
+      - nginx-proxy
+      - plex-services
+    volumes:
+      - config:/config
+      - /uhh/videos/anime:/anime
+      - /uhh/videos/movies:/movies
+      - /uhh/videos/tv:/tv
+    ports:
+      - 6767:6767
+    restart: unless-stopped
+
+networks:
+  nginx-proxy:
+    external:
+      name: nginx-proxy
+  plex-services:
+    external:
+      name: plex-services
+
+volumes:
+    config: {}
+
