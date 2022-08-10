@@ -1,0 +1,13 @@
+diff --git a/plugins/git/git.plugin.zsh b/plugins/git/git.plugin.zsh
+index be6adc7..8a24695 100644
+--- a/plugins/git/git.plugin.zsh
++++ b/plugins/git/git.plugin.zsh
+@@ -276,7 +276,7 @@ alias gsi='git submodule init'
+ alias gsps='git show --pretty=short --show-signature'
+ alias gsr='git svn rebase'
+ alias gss='git status -s'
+-alias gst='git status'
++alias gs='git status'
+ 
+ # use the default stash push on git 2.13 and newer
+ is-at-least 2.13 "$git_version" \
