@@ -6,9 +6,10 @@ else
     script_path="$0"
 fi
 
-script_dir="$(dirname $(realpath $script_path))"
-repo_dir="$(dirname $script_dir)"
+repo_dir="$(dirname $(realpath $script_path))"
+
+source ${repo_dir}/utils/bash_utils.sh
 
 ln -s ${repo_dir}/.tmux.conf ~
 
-git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
+gitCloneOrPull ~/.tmux/plugins/tpm https://github.com/tmux-plugins/tpm
