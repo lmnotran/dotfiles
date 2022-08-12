@@ -6,18 +6,18 @@ else
     script_path="$0"
 fi
 
-REPO_DIR="$(dirname "$(realpath "$script_path")")"
+repo_dir="$(dirname "$(realpath "$script_path")")"
 
 plugins=(
     zsh-autosuggestions
     zsh-syntax-highlighting
 )
 
+source ${repo_dir}/utils/bash_utils.sh
+
 for plugin in ${plugins[@]}; do
     plugin_repo=${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/${plugin}
-    if [ ! -d $plugin_repo ]; then
-        git clone https://github.com/zsh-users/${plugin} $plugin_repo
-    fi
+    gitCloneOrPull $plugin_repo https://github.com/zsh-users/${plugin}
 done
 
 # Fix perms
@@ -36,6 +36,6 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
 fi
 
 if [ -f $ZSH/plugins/git/git.plugin.zsh ] && [ ! -f $ZSH/plugins/git/patched ]; then
-    git -C $ZSH apply $REPO_DIR/patches/gs-alias.patch
+    git -C $ZSH apply $repo_dir/patches/gs-alias.patch
     touch $ZSH/plugins/git/patched
 fi
