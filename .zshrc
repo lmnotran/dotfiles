@@ -158,12 +158,8 @@ export PATH="/home/$USER/.local/bin:$PATH"
 export PATH="/usr:$PATH"
 export PATH="/usr/local:$PATH"
 
-umask 002
+if [[ "$HOST" == "bigboi"* ]]; then
+    umask 002
+fi
 
-# Generated for envman. Do not edit.
-[ -s "$HOME/.config/envman/load.sh" ] && source "$HOME/.config/envman/load.sh"
-# export GO111MODULE=on
-
-[ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
-
-
+export GO111MODULE=on
