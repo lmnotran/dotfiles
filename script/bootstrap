@@ -80,10 +80,27 @@ install_packages()
 
 bootstrap_zsh()
 {
+    sudo apt install zsh
+
     # Install oh-my-zsh
-    sh -c "$(curl -fsSL https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+    if [ ! -d "${HOME}/.oh-my-zsh" ]; then
+        sh -c "$(curl -fsSL https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+    fi
 
     # Link .zshrc into $HOME
+    if [ -f "${HOME}/.zshrc" ]; then
+        while true; do
+            printf "Remove existing \e[31m~/.zshrc\e[0m? [y/n]"
+            read yn
+            case $yn in
+                [Yy]* )
+                    rm ~/.zshrc
+                    break;;
+                [Nn]* ) exit;;
+                * ) echo "Please answer yes or no.";;
+            esac
+        done
+    fi
     ln -s ${repo_dir}/.zshrc ~
 
     # Clone non-default zsh plugins
@@ -119,7 +136,7 @@ main()
         bootstrap_mac
     fi
 
-    if [[ "$USER" == "matran"* ]]; then
+    if [[ "$(whoami)" == "matran"* ]]; then
         echo "Bootstrapping silabs"
         ${script_dir}/bootstrap_silabs
     fi
