@@ -78,6 +78,13 @@ install_packages()
 
 bootstrap_zsh()
 {
+    # Install oh-my-zsh
+    sh -c "$(curl -fsSL https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+
+    # Link .zshrc into $HOME
+    ln -s ${repo_dir}/.zshrc ~
+
+    # Clone non-default zsh plugins
     plugins=(
         zsh-autosuggestions
         zsh-syntax-highlighting
