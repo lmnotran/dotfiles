@@ -92,6 +92,11 @@ bootstrap_zsh()
     done
 }
 
+bootstrap_mac()
+{
+    return
+}
+
 main()
 {
     install_packages
@@ -115,14 +120,8 @@ main()
 
 main
 
-bootstrap_mac()
-{
-    return
-}
-
 
 if [ -f $ZSH/plugins/git/git.plugin.zsh ] && [ ! -f $ZSH/plugins/git/patched ]; then
     git -C $ZSH apply $repo_dir/patches/gs-alias.patch
     touch $ZSH/plugins/git/patched
 fi
-
