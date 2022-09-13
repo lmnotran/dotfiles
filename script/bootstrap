@@ -44,7 +44,8 @@ install_packages_brew()
         coreutils \
         openjdk@11 \
         grep \
-        fzf
+        fzf \
+        starship
 
     /opt/homebrew/opt/fzf/install
 }
@@ -116,6 +117,7 @@ bootstrap_zsh()
         plugin_repo=${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/${plugin}
         gitCloneOrPull $plugin_repo https://github.com/zsh-users/${plugin}
     done
+
 }
 
 bootstrap_mac()
