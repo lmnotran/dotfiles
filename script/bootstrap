@@ -1,15 +1,19 @@
 #!/bin/bash
 
-if [[ -n ${BASH_SOURCE[0]} ]]; then
-    script_path="${BASH_SOURCE[0]}"
-else
-    script_path="$0"
-fi
-
-script_dir="$(dirname "$(realpath "$script_path")")"
-repo_dir="$(dirname "$script_dir")"
-
 set -euxo pipefail
+
+set_repo_dir()
+{
+    if [[ -n ${BASH_SOURCE[0]} ]]; then
+        script_path="${BASH_SOURCE[0]}"
+    else
+        script_path="$0"
+    fi
+
+    script_dir="$(dirname "$(realpath "$script_path")")"
+    repo_dir="$(dirname "$script_dir")"
+
+}
 
 install_packages_apt()
 {
@@ -34,20 +38,29 @@ install_packages_rpm()
     echo 'rpm not supported currently' && false
 }
 
-install_packages_brew()
+install_brew()
 {
     echo 'Installing brew...'
     command -v brew || /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    export PATH="$PATH:/opt/homebrew/bin"
+}
 
+install_packages_brew()
+{
     echo 'Installing brew packages...'
     brew install \
         coreutils \
         openjdk@11 \
         grep \
         fzf \
-        starship
+        wget \
+        starship \
+        pyenv
 
-    /opt/homebrew/opt/fzf/install
+    if [[ ! -f fzf_installed ]]; then
+        /opt/homebrew/opt/fzf/install
+        touch fzf_installed
+    fi
 }
 
 install_packages_source()
@@ -62,7 +75,7 @@ install_packages_pip3()
 
 install_packages()
 {
-    PM=source
+    PM=none
     if command -v apt-get; then
         PM=apt
     elif command -v rpm; then
@@ -71,7 +84,13 @@ install_packages()
         PM=opkg
     elif command -v brew; then
         PM=brew
+    elif command -v source; then
+        PM=source
+    else
+        echo 'No supported package managers detected.' && false
+        exit 1
     fi
+
     install_packages_$PM
 
     if command -v pip3; then
@@ -81,7 +100,13 @@ install_packages()
 
 bootstrap_zsh()
 {
-    sudo apt install zsh
+    if ! command -v zsh; then
+        if command -v apt; then
+            sudo apt install zsh
+        elif command -v brew; then
+            brew install zsh
+        fi
+    fi
 
     # Install oh-my-zsh
     if [ ! -d "${HOME}/.oh-my-zsh" ]; then
@@ -107,7 +132,6 @@ bootstrap_zsh()
     # Clone non-default zsh plugins
     plugins=(
         zsh-autosuggestions
-        zsh-syntax-highlighting
     )
 
     # Source this for 'gitCloneOrPull'
@@ -118,6 +142,10 @@ bootstrap_zsh()
         gitCloneOrPull $plugin_repo https://github.com/zsh-users/${plugin}
     done
 
+    gitCloneOrPull \
+        ${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/plugins/fast-syntax-highlighting \
+        https://github.com/zdharma-continuum/fast-syntax-highlighting.git
+
 }
 
 bootstrap_mac()
@@ -127,7 +155,13 @@ bootstrap_mac()
 
 main()
 {
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        install_brew
+    fi
+
     install_packages
+
+    set_repo_dir
 
     echo "Bootstrapping zsh"
     bootstrap_zsh
