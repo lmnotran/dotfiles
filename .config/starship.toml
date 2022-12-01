@@ -22,6 +22,7 @@ format = ":[$path]($style)[$read_only]($read_only_style) "
 disabled = false
 
 [battery]
+disabled = true
 full_symbol = "🔋 "
 charging_symbol = "⚡️ "
 discharging_symbol = "💀 "
@@ -55,7 +56,10 @@ deleted = "🗑"
 ################################################################################
 # Programming Langs
 ################################################################################
+[cmake]
+disabled = true
 [c]
+disabled = true
 format = '''\[[$name $version]($style)\]'''
 commands = [ ["arm-none-eabi-gcc", "--version"], [ "cc", "--version" ], [ "gcc", "--version" ], [ "clang", "--version" ] ]
 

@@ -1,4 +1,19 @@
 
+export PATH="/opt/homebrew/bin:$PATH"
+export PATH="/usr/local/opt/llvm/bin:$PATH"
+export PATH="/home/$USER/.local/bin:$PATH"
+export PATH="/usr:$PATH"
+export PATH="/usr/local:$PATH"
+export PATH="/opt/homebrew/opt/binutils/bin:$PATH"
+# Lmno dotfiles
+export LMNOTRAN_DOTFILES=~/repos/dotfiles
+source $LMNOTRAN_DOTFILES/lmnotran.profile
+
+if [[ "$USER" == "matran"* ]]; then
+    # Work user
+    source $LMNOTRAN_DOTFILES/silabs.zshrc
+fi
+
 # If you come from bash you might have to change your $PATH.
 # export PATH=$HOME/bin:/usr/local/bin:$PATH
 export TERM="xterm-256color"
@@ -10,6 +25,9 @@ export ZSH="${HOME}/.oh-my-zsh"
 # to know which specific one was loaded, run: echo $RANDOM_THEME
 # See https://github.com/ohmyzsh/ohmyzsh/wiki/Themes
 # ZSH_THEME="agnoster"
+ZSH_THEME="spaceship"
+export SPACESHIP_CONFIG="$DOTFILES/.spaceship.zsh"
+
 
 # Set list of themes to pick from when loading at random
 # Setting this variable when ZSH_THEME=random will cause zsh to load
@@ -75,7 +93,8 @@ plugins=(
     ssh-agent
     colored-man-pages
     zsh-autosuggestions
-    zsh-syntax-highlighting
+    # pyenv
+    # fast-syntax-highlighting
     iterm2
 )
 
@@ -112,9 +131,9 @@ source $ZSH/oh-my-zsh.sh
 #
 
 # pyenv
-export PYENV_ROOT="$HOME/.pyenv"
-command -v pyenv >/dev/null || export PATH="$PYENV_ROOT/bin:$PATH"
-eval "$(pyenv init -)"
+# export PYENV_ROOT="$HOME/.pyenv"
+# command -v pyenv >/dev/null || export PATH="$PYENV_ROOT/bin:$PATH"
+# eval "$(pyenv init -)"
 
 if [[ "$OSTYPE" == "darwin"* ]]; then
     # Mac OSX
@@ -137,26 +156,11 @@ fi
 export QT_GRAPHICSSYSTEM=native
 export GPG_TTY=$(tty)
 
-export PATH="/usr/local/opt/llvm/bin:$PATH"
-
 #source ~/.power9krc
 
 #export ZSH_TMUX_ITERM2=true
 export ZSH_TMUX_UNICODE=true
 
-
-# Lmno dotfiles
-export LMNOTRAN_DOTFILES=~/repos/dotfiles
-source $LMNOTRAN_DOTFILES/lmnotran.profile
-
-if [[ "$USER" == "matran"* ]]; then
-    # Work user
-    source $LMNOTRAN_DOTFILES/silabs.zshrc
-fi
-
-export PATH="/home/$USER/.local/bin:$PATH"
-export PATH="/usr:$PATH"
-export PATH="/usr/local:$PATH"
 
 if [[ "$HOST" == "bigboi"* ]]; then
     umask 002
@@ -164,5 +168,5 @@ fi
 
 export GO111MODULE=on
 
-export STARSHIP_CONFIG=$DOTFILES/.config/starship.toml
-eval "$(starship init zsh)"
+# export STARSHIP_CONFIG=$DOTFILES/.config/starship.toml
+# eval "$(starship init zsh)"
