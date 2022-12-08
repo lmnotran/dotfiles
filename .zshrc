@@ -9,7 +9,7 @@ export PATH="/opt/homebrew/opt/binutils/bin:$PATH"
 export LMNOTRAN_DOTFILES=~/repos/dotfiles
 source $LMNOTRAN_DOTFILES/lmnotran.profile
 
-if [[ "$USER" == "matran"* ]]; then
+if [[ "$(whoami)" == "matran"* ]]; then
     # Work user
     source $LMNOTRAN_DOTFILES/silabs.zshrc
 fi
@@ -25,9 +25,8 @@ export ZSH="${HOME}/.oh-my-zsh"
 # to know which specific one was loaded, run: echo $RANDOM_THEME
 # See https://github.com/ohmyzsh/ohmyzsh/wiki/Themes
 # ZSH_THEME="agnoster"
-ZSH_THEME="spaceship"
+export ZSH_THEME="spaceship"
 export SPACESHIP_CONFIG="$DOTFILES/.spaceship.zsh"
-
 
 # Set list of themes to pick from when loading at random
 # Setting this variable when ZSH_THEME=random will cause zsh to load
