@@ -1,0 +1,49 @@
+version: '3'
+
+services:
+  nginx-proxy:
+    image: jwilder/nginx-proxy
+    networks:
+      - default
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+      - certs:/etc/nginx/certs
+      - dhparam:/etc/nginx/dhparam
+      - html:/usr/share/nginx/html
+      - vhost:/etc/nginx/vhost.d
+    restart: always
+
+  nginx-proxy-acme:
+    image: nginxproxy/acme-companion
+    networks:
+      - default
+    environment:
+      - DEFAULT_EMAIL=mason@Lmnotran.com
+    volumes_from:
+      - nginx-proxy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - acme:/etc/acme.sh
+    restart: always
+
+  whoami:
+    image: jwilder/whoami
+    networks:
+      - default
+    environment:
+      - VIRTUAL_HOST=whoami.local
+
+volumes:
+  acme:
+  certs:
+  dhparam:
+  html:
+  vhost:
+
+networks:
+  default:
+    name: nginx-proxy
+    driver: bridge
