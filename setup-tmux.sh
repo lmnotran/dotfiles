@@ -10,6 +10,16 @@ repo_dir="$(dirname $(realpath $script_path))"
 
 source ${repo_dir}/utils/bash_utils.sh
 
-ln -s ${repo_dir}/.tmux.conf ~
+TMUX_CONFIG_ROOT=${repo_dir}/.tmux
 
-gitCloneOrPull ~/.tmux/plugins/tpm https://github.com/tmux-plugins/tpm
+# Make sure submodule is initialized
+git -C ${repo_dir} submodule update --init --recursive .tmux
+
+ln -s -f ${TMUX_CONFIG_ROOT}/.tmux.conf ~/.tmux.conf
+
+# Create host-specific dotfiles folder
+mkdir -p ${repo_dir}/$(hostname)/
+
+# Copy .tmux.conf.local into host-specific dotfiles and create a symlink in ~
+cp ${TMUX_CONFIG_ROOT}/.tmux.conf.local ${repo_dir}/$(hostname)/.tmux.conf.local
+ln -s -f ${repo_dir}/$(hostname)/.tmux.conf.local ~/.tmux.conf.local
