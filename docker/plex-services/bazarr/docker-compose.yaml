@@ -22,6 +22,12 @@ services:
     ports:
       - 6767:6767
     restart: unless-stopped
+    labels:
+      - homepage.group=Media
+      - homepage.name=Bazarr
+      - homepage.icon=bazarr.png
+      - homepage.href=https://bazarr.segfault.rip/
+      - homepage.description=A subtitle management tool
 
 networks:
   nginx-proxy:

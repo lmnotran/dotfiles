@@ -12,10 +12,8 @@ services:
       - PUID=1000
       - PGID=33
       - VERSION=latest
-      - portainer_CLAIM=claim-djWRK_-tpCZxjFSuzydi
       - TZ=America/New_York
       - UMASK=002
-      - NVIDIA_VISIBLE_DEVICES=all
     ports:
       - 8000:8000
       - 9000:9000

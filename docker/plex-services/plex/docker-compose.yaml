@@ -30,3 +30,10 @@ services:
       - /uhh:/uhh
       - /wd-red-6tb:/wd-red-6tb
     restart: unless-stopped
+
+    labels:
+      - homepage.group=Media
+      - homepage.name=Plex
+      - homepage.icon=plex.png
+      - homepage.href=https://app.plex.tv/desktop/#!/media/8a21dbe880c2e1d652943b0ed4ed7d60603ff684/com.plexapp.plugins.library?key=%2Fhubs&pageType=hub
+      - homepage.description=Plex Media server

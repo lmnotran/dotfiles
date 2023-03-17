@@ -1,35 +1,34 @@
 ---
 version: "2.1"
 services:
-  sonarr:
-    image: lscr.io/linuxserver/sonarr:latest
-    container_name: sonarr
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
     environment:
       - PUID=1000
       - PGID=33
       - TZ=America/New_York
       - UMASK_SET=002
-      - VIRTUAL_HOST=sonarr.segfault.rip
-      - VIRTUAL_PORT=8989
-      - LETSENCRYPT_HOST=sonarr.segfault.rip
+      - VIRTUAL_HOST=radarr.segfault.rip
+      - VIRTUAL_PORT=7878
+      - LETSENCRYPT_HOST=radarr.segfault.rip
     volumes:
       - config:/config
       - /uhh:/uhh
-      - /uhh/videos/tv:/tv
-      - /uhh/videos/anime:/anime
+      - /uhh/videos/movies:/movies
       - /uhh/downloads:/downloads
     ports:
-      - 8989:8989
+      - 7878:7878
     networks:
       - nginx-proxy
       - plex-services
     restart: unless-stopped
     labels:
       - homepage.group=Media
-      - homepage.name=Sonarr
-      - homepage.icon=sonarr.png
-      - homepage.href=https://sonarr.segfault.rip/
-      - homepage.description=A TV series manager
+      - homepage.name=radarr
+      - homepage.icon=radarr.png
+      - homepage.href=https://radarr.segfault.rip/
+      - homepage.description=A movie manager
 
 networks:
   default:

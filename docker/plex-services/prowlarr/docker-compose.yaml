@@ -19,6 +19,12 @@ services:
     volumes:
       - config:/config
     restart: unless-stopped
+    labels:
+      - homepage.group=Media
+      - homepage.name=Prowlarr
+      - homepage.icon=prowlarr.png
+      - homepage.href=https://prowlarr.segfault.rip/
+      - homepage.description=An indexer manager/proxy
 
 networks:
   nginx-proxy:

@@ -1,9 +1,6 @@
 ---
 version: "3"
 
-volumes:
-        config: {}
-
 services:
   overseerr:
     image: linuxserver/overseerr:latest
@@ -22,9 +19,18 @@ services:
             #  - 5055:5055/tcp # Web UI
     networks:
       - nginx-proxy
+    labels:
+      - homepage.group=Media
+      - homepage.name=Overseerr
+      - homepage.icon=overseerr.png
+      - homepage.href=https://request.segfault.rip/
+      - homepage.description=A request management and media discovery tool
+
 networks:
   default:
   nginx-proxy:
     external:
       name: nginx-proxy
 
+volumes:
+        config: {}

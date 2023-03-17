@@ -23,11 +23,12 @@ services:
       - LETSENCRYPT_HOST=jelly.segfault.rip
     networks:
       - nginx-proxy
+      - plex-services
     ports:
       - 8096:8096
       - 8920:8920 #optional
       - 7359:7359/udp #optional
-      - 1900:1900/udp #optional
+      # - 1900:1900/udp #optional
     volumes:
       - config:/config
       - /uhh/videos/anime:/data/anime
@@ -38,11 +39,21 @@ services:
       - /wd-red-6tb:/wd-red-6tb
     restart: unless-stopped
 
+    labels:
+      - homepage.group=Media
+      - homepage.name=Jellyfin
+      - homepage.icon=jellyfin.png
+      - homepage.href=https://jelly.segfault.rip/
+      - homepage.description=Jellyfin Media server
+
 networks:
   default:
   nginx-proxy:
     external:
       name: nginx-proxy
+  plex-services:
+    external:
+      name: plex-services
 
 volumes:
   config: {}
