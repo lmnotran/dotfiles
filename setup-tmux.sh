@@ -18,8 +18,8 @@ git -C ${repo_dir} submodule update --init --recursive .tmux
 ln -s -f ${TMUX_CONFIG_ROOT}/.tmux.conf ~/.tmux.conf
 
 # Create host-specific dotfiles folder
-mkdir -p ${repo_dir}/$(hostname)/
+mkdir -p ${repo_dir}/machine-specific-config/$(hostname)/
 
 # Copy .tmux.conf.local into host-specific dotfiles and create a symlink in ~
-cp ${TMUX_CONFIG_ROOT}/.tmux.conf.local ${repo_dir}/$(hostname)/.tmux.conf.local
-ln -s -f ${repo_dir}/$(hostname)/.tmux.conf.local ~/.tmux.conf.local
+cp ${TMUX_CONFIG_ROOT}/.tmux.conf.local ${repo_dir}/machine-specific-config/$(hostname)/.tmux.conf.local
+ln -s -f ${repo_dir}/machine-specific-config/$(hostname)/.tmux.conf.local ~/.tmux.conf.local

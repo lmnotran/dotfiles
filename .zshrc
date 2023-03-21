@@ -9,11 +9,6 @@ export PATH="/opt/homebrew/opt/binutils/bin:$PATH"
 export LMNOTRAN_DOTFILES=~/repos/dotfiles
 source $LMNOTRAN_DOTFILES/lmnotran.profile
 
-if [[ "$(whoami)" == "matran"* ]]; then
-    # Work user
-    source $LMNOTRAN_DOTFILES/silabs.zshrc
-fi
-
 # If you come from bash you might have to change your $PATH.
 # export PATH=$HOME/bin:/usr/local/bin:$PATH
 export TERM="xterm-256color"
@@ -134,24 +129,6 @@ source $ZSH/oh-my-zsh.sh
 # command -v pyenv >/dev/null || export PATH="$PYENV_ROOT/bin:$PATH"
 # eval "$(pyenv init -)"
 
-if [[ "$OSTYPE" == "darwin"* ]]; then
-    # Mac OSX
-
-    # iTerm2 integration
-    test -e "${HOME}/.iterm2_shell_integration.zsh" && source "${HOME}/.iterm2_shell_integration.zsh" || true
-
-    # Add Visual Studio Code (code)
-    export PATH="$PATH:/Applications/Visual Studio Code.app/Contents/Resources/app/bin"
-
-    # use GNU grep
-    export PATH="/opt/homebrew/opt/grep/libexec/gnubin:$PATH"
-    export PATH="/usr/local/opt/grep/libexec/gnubin:$PATH"
-
-elif [[ "$OSTYPE" == "linux"* ]]; then
-    # Linux
-    :
-fi
-
 export QT_GRAPHICSSYSTEM=native
 export GPG_TTY=$(tty)
 
@@ -159,13 +136,15 @@ export GPG_TTY=$(tty)
 
 #export ZSH_TMUX_ITERM2=true
 export ZSH_TMUX_UNICODE=true
-
-
-if [[ "$HOST" == "bigboi"* ]]; then
-    umask 002
-fi
-
 export GO111MODULE=on
+
+# Source machine-specific-configs
+MACHINE_ZSHRC=$LMNOTRAN_DOTFILES/machine-specific-config/$(hostname)/.zshrc
+[ -f $MACHINE_ZSHRC ] && source $MACHINE_ZSHRC
+
+# Work user
+MACHINE_SILABS_ZSHRC=$LMNOTRAN_DOTFILES/machine-specific-config/$(hostname)/silabs.zshrc
+[[ "$(whoami)" == "matran"* ]] && [ -f $MACHINE_SILABS_ZSHRC ] && source $MACHINE_SILABS_ZSHRC
 
 # export STARSHIP_CONFIG=$DOTFILES/.config/starship.toml
 # eval "$(starship init zsh)"
