@@ -14,10 +14,10 @@
             "console": "integratedTerminal"
         },
         {
-            "name": "su_nexus_dl",
+            "name": "su_artifactory_dl",
             "type": "python",
             "request": "launch",
-            "program": "silabs/bash-scripts/su_nexus_dl.py",
+            "program": "silabs/bash-scripts/su_artifactory_dl.py",
             "args": ["https://nexus.silabs.com/repository/gecko-sdk/develop/21q4/821/build.xml"],
             "console": "integratedTerminal"
         }

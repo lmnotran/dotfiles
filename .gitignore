@@ -1,3 +1,4 @@
 
 .spaceship.zsh.zwc
 .DS_Store
+**/__pycache__
