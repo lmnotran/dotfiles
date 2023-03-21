@@ -14,10 +14,10 @@
             "console": "integratedTerminal"
         },
         {
-            "name": "su_nexus_dl",
+            "name": "su_registry_dl",
             "type": "python",
             "request": "launch",
-            "program": "prev/bash-scripts/su_nexus_dl.py",
+            "program": "prev/bash-scripts/su_registry_dl.py",
             "args": ["https://registry.example.com/repository/gecko-sdk/develop/21q4/821/build.xml"],
             "console": "integratedTerminal"
         }
