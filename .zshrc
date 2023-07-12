@@ -1,10 +1,20 @@
-
+zmodload zsh/zprof
 export PATH="/opt/homebrew/bin:$PATH"
-export PATH="/usr/local/opt/llvm/bin:$PATH"
-export PATH="/home/$USER/.local/bin:$PATH"
-export PATH="/usr:$PATH"
-export PATH="/usr/local:$PATH"
-export PATH="/opt/homebrew/opt/binutils/bin:$PATH"
+
+add_to_path=(
+    "/home/$USER/.local/bin"
+    "/usr"
+    "/usr/local"
+    "/opt/homebrew/opt/binutils/bin"
+)
+for p in add_to_path; do
+    if [ ! -d "$p" ]; then
+    #     echo "Skipping ${p}"
+        continue
+    fi
+    export PATH="${p}:${PATH}"
+done
+
 # Lmno dotfiles
 export LMNOTRAN_DOTFILES=~/repos/dotfiles
 source $LMNOTRAN_DOTFILES/lmnotran.profile
@@ -76,6 +86,13 @@ export SPACESHIP_CONFIG="$DOTFILES/.spaceship.zsh"
 # Would you like to use another custom folder than $ZSH/custom?
 # ZSH_CUSTOM=/path/to/new-custom-folder
 
+
+# pyenv
+# This needs to happen before the pyenv plugin is sourced
+export PYENV_ROOT="$HOME/.pyenv"
+command -v pyenv >/dev/null || export PATH="$PYENV_ROOT/bin:$PATH"
+eval "$(pyenv init -)"
+
 # Which plugins would you like to load?
 # Standard plugins can be found in $ZSH/plugins/
 # Custom plugins may be added to $ZSH_CUSTOM/plugins/
@@ -87,7 +104,7 @@ plugins=(
     ssh-agent
     colored-man-pages
     zsh-autosuggestions
-    # pyenv
+    pyenv
     # fast-syntax-highlighting
     iterm2
 )
@@ -123,11 +140,6 @@ source $ZSH/oh-my-zsh.sh
 # alias zshconfig="mate ~/.zshrc"
 # alias ohmyzsh="mate ~/.oh-my-zsh"
 #
-
-# pyenv
-# export PYENV_ROOT="$HOME/.pyenv"
-# command -v pyenv >/dev/null || export PATH="$PYENV_ROOT/bin:$PATH"
-# eval "$(pyenv init -)"
 
 export QT_GRAPHICSSYSTEM=native
 export GPG_TTY=$(tty)

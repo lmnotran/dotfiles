@@ -5,9 +5,8 @@ if [[ -n ${BASH_SOURCE[0]} ]]; then
 else
     script_path="$0"
 fi
-
-REPO_DIR="$(dirname "$(realpath "$script_path")")"
-# echo REPO_DIR = "${REPO_DIR}"
+script_dir=$(dirname "${script_path}")
+REPO_DIR="$(git -C ${script_dir} rev-parse --show-toplevel)"
 
 export DOTFILES=$REPO_DIR
 source $REPO_DIR/utils/bash_utils.sh
