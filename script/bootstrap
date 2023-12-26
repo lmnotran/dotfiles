@@ -25,7 +25,9 @@ install_packages_apt()
         unzip \
         dialog \
         wget \
-        curl
+        curl \
+        fzf \
+        build-essential
 }
 
 install_packages_opkg()
@@ -42,7 +44,8 @@ install_brew()
 {
     echo 'Installing brew...'
     command -v brew || /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-    export PATH="$PATH:/opt/homebrew/bin"
+
+
 }
 
 install_packages_brew()
@@ -100,6 +103,8 @@ install_packages()
 
 bootstrap_zsh()
 {
+    echo "Bootstrapping zsh"
+
     if ! command -v zsh; then
         if command -v apt; then
             sudo apt install zsh
@@ -121,13 +126,13 @@ bootstrap_zsh()
             case $yn in
                 [Yy]* )
                     rm ~/.zshrc
+                    ln -s ${repo_dir}/.zshrc ~
                     break;;
-                [Nn]* ) exit;;
+                [Nn]* ) break;;
                 * ) echo "Please answer yes or no.";;
             esac
         done
     fi
-    ln -s ${repo_dir}/.zshrc ~
 
     # Clone non-default zsh plugins
     plugins=(
@@ -150,6 +155,7 @@ bootstrap_zsh()
 
 bootstrap_mac()
 {
+    echo "Bootstrapping mac"
     return
 }
 
@@ -161,14 +167,17 @@ main()
 
     install_packages
 
+    if [ ! -d "${HOME}/.pyenv" ]; then
+        echo "Installing pyenv"
+        curl https://pyenv.run | bash
+    fi
+
     set_repo_dir
 
-    echo "Bootstrapping zsh"
-    bootstrap_zsh
+    if [ ! -d "${HOME}/.oh-my-zsh" ]; then bootstrap_zsh; fi
 
     # macOS specific bootstrap
     if [[ "$OSTYPE" == "darwin"* ]]; then
-        echo "Bootstrapping mac"
         bootstrap_mac
     fi
 
