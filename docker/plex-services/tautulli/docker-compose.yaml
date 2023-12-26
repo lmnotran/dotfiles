@@ -1,0 +1,34 @@
+---
+version: "3"
+services:
+  tautulli:
+    image: lscr.io/linuxserver/tautulli
+    container_name: tautulli
+    environment:
+      - VERSION=latest
+      - PGID=33
+      - PUID=1000
+      - TAUTULLI_DOCKER=True
+      - TZ=America/New_York
+      - LETSENCRYPT_HOST=tautulli.segfault.rip
+      - VIRTUAL_HOST=tautulli.segfault.rip
+      - VIRTUAL_PORT=8181
+    networks:
+      - nginx-proxy
+      - plex-services
+    ports:
+      - 8181:8181
+    volumes:
+      - config:/config
+      - /uhh/plex-config/Library/Application Support/Plex Media Server/Logs:/logs:ro
+    restart: unless-stopped
+
+networks:
+  default:
+  nginx-proxy:
+    external: true
+  plex-services:
+    external: true
+
+volumes:
+  config: {}

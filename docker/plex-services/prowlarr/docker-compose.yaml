@@ -28,11 +28,9 @@ services:
 
 networks:
   nginx-proxy:
-    external:
-      name: nginx-proxy
+    external: true
   plex-services:
-    external:
-      name: plex-services
+    external: true
 
 volumes:
     config: {}

@@ -1,0 +1,32 @@
+# Simple docker-compose.yml
+# You can change your port or volume location
+
+version: '3.3'
+
+services:
+  uptime-kuma:
+    image: louislam/uptime-kuma:latest
+    container_name: uptime-kuma
+    environment:
+      - TZ=America/New_York
+      - VIRTUAL_HOST=status.bigboi.segfault.rip
+      - VIRTUAL_PORT=3001
+      - LETSENCRYPT_HOST=status.bigboi.segfault.rip
+    volumes:
+      - config:/app/data
+    ports:
+      - 3001:3001  # <Host Port>:<Container Port>
+    networks:
+      - nginx-proxy
+      - plex-services
+    restart: unless-stopped
+
+networks:
+  default:
+  nginx-proxy:
+    external: true
+  plex-services:
+    external: true
+
+volumes:
+  config: {}

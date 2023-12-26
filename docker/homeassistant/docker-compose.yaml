@@ -1,0 +1,19 @@
+version: '3'
+services:
+  homeassistant:
+    container_name: homeassistant
+    image: "ghcr.io/home-assistant/home-assistant:stable"
+    volumes:
+      - config:/config
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      - LETSENCRYPT_HOST=assist.segfault.rip
+      - VIRTUAL_HOST=assist.segfault.rip
+      - VIRTUAL_PORT=8123
+    restart: unless-stopped
+    privileged: true
+    network_mode: host
+
+volumes:
+  config: {}
+

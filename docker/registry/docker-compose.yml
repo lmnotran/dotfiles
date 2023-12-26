@@ -1,0 +1,33 @@
+version: '3'
+
+services:
+  registry:
+    restart: always
+    image: registry:2
+    ports:
+      - 5000:5000
+    environment:
+      REGISTRY_AUTH: htpasswd
+      REGISTRY_AUTH_HTPASSWD_PATH: /auth/htpasswd
+      REGISTRY_AUTH_HTPASSWD_REALM: Registry Realm
+      REGISTRY_HTTP_TLS_CERTIFICATE: /certs/fullchain.pem
+      REGISTRY_HTTP_TLS_KEY: /certs/key.pem
+      # Set to the port that your webapp listens on
+      VIRTUAL_PORT: 5000
+      # Can be comma-separated list
+      VIRTUAL_HOST: registry.segfault.rip
+      # The domain for the cert, can also be comma-separated
+      LETSENCRYPT_HOST: registry.segfault.rip
+      # Your email for the cert
+      LETSENCRYPT_EMAIL: mason@Lmnotran.com
+    volumes:
+      - registry:/var/lib/registry
+      - auth:/auth
+      - /opt/docker/ssl/letsencrypt-nginx-sidecar/sidecar/certs/domain.example.com:/certs
+  default:
+    external:
+      name: nginx-proxy
+
+volumes:
+  registry::q
+  auth:

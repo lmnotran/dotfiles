@@ -1,0 +1,29 @@
+---
+version: "2.1"
+services:
+  code-server:
+    image: lscr.io/linuxserver/code-server:latest
+    container_name: code-server
+    environment:
+      - PUID=1000
+      - PGID=33
+      - TZ=America/New_York
+      - PROXY_DOMAIN=code.segfault.rip #optional
+      - DEFAULT_WORKSPACE=/config/workspace #optional
+      - VIRTUAL_HOST=code.segfault.rip
+      - LETSENCRYPT_HOST=code.segfault.rip
+      - VIRTUAL_PORT=8443
+    networks:
+      - nginx-proxy
+    volumes:
+      - config:/config
+    restart: unless-stopped
+
+networks:
+  default:
+  nginx-proxy:
+    external:
+      name: nginx-proxy
+
+volumes:
+  config: {}

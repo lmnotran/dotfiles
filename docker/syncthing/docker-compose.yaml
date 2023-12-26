@@ -1,0 +1,37 @@
+---
+version: "2.1"
+services:
+  syncthing:
+    image: lscr.io/linuxserver/syncthing:latest
+    container_name: syncthing
+    hostname: syncthing #optional
+    environment:
+      - PUID=1000
+      - PGID=33
+      - UMASK=002
+      - TZ=America/New_York
+      - VIRTUAL_HOST=syncthing.segfault.rip
+      - LETSENCRYPT_HOST=syncthing.segfault.rip
+      - VIRTUAL_PORT=8384
+    volumes:
+      - config:/config
+      - /uhh:/uhh
+    ports:
+      - 8384:8384
+      - 22000:22000/tcp
+      - 22000:22000/udp
+      - 21027:21027/udp
+    networks:
+      - nginx-proxy
+    restart: unless-stopped
+
+networks:
+  default:
+  nginx-proxy:
+    external:
+      name: nginx-proxy
+
+volumes:
+  config: {}
+
+

@@ -17,6 +17,7 @@ services:
       - /uhh:/uhh
       - /uhh/videos/tv:/tv
       - /uhh/videos/anime:/anime
+      - /uhh/videos/korean:/korean
       - /uhh/downloads:/downloads
     ports:
       - 8989:8989
@@ -34,11 +35,9 @@ services:
 networks:
   default:
   nginx-proxy:
-    external:
-      name: nginx-proxy
+    external: true
   plex-services:
-    external:
-      name: plex-services
+    external: true
 
 volumes:
   config: {}

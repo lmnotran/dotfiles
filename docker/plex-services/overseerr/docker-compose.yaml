@@ -29,8 +29,7 @@ services:
 networks:
   default:
   nginx-proxy:
-    external:
-      name: nginx-proxy
+    external: true
 
 volumes:
         config: {}
