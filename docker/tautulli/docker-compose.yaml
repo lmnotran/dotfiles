@@ -16,21 +16,18 @@ services:
     networks:
       - nginx-proxy
       - plex-services
-    ports:
-      - 8181:8181
     volumes:
       - config:/config
-      - /uhh/plex-config/Library/Application Support/Plex Media Server/Logs:/logs:ro
     restart: unless-stopped
 
 networks:
   default:
   nginx-proxy:
-    external:
-      name: nginx-proxy
+    external: true
   plex-services:
-    external:
-      name: plex-services
+    external: true
 
 volumes:
   config: {}
+
+
