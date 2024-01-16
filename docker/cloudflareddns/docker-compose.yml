@@ -1,0 +1,29 @@
+version: "3.7"
+
+services:
+  cloudflareddns:
+    container_name: cloudflareddns
+    image: ghcr.io/hotio/cloudflareddns
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - UMASK=002
+      - TZ=Etc/UTC
+      - INTERVAL=300
+      - DETECTION_MODE=dig-whoami.cloudflare
+      - LOG_LEVEL=3
+      - CF_USER=mason@Lmnotran.com
+      # The API key is account-wide
+      - CF_APIKEY=***REDACTED_CF_APIKEY***
+      # This token is specific to bao.segfault.rip
+      - CF_APITOKEN=***REDACTED_CF_APITOKEN***
+      # This token works from any host
+      - CF_APITOKEN_ZONE=***REDACTED_CF_ZONE_TOKEN***
+      - CF_HOSTS=bao.segfault.rip
+      - CF_ZONES=segfault.rip
+      - CF_RECORDTYPES=A;
+    volumes:
+      - config:/config
+
+volumes:
+  config: {}
