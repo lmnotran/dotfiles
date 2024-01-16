@@ -14,16 +14,13 @@ services:
     ports:
       - '7777:7777'
     networks:
-      - nginx-proxy
+      - traefik-proxy
     restart: unless-stopped
     tty: true
     stdin_open: true
 
 networks:
   default:
-  nginx-proxy:
-    external:
-      name: nginx-proxy
 
 volumes:
   config: {}

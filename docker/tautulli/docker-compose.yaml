@@ -14,17 +14,13 @@ services:
       - VIRTUAL_HOST=tautulli.segfault.rip
       - VIRTUAL_PORT=8181
     networks:
-      - nginx-proxy
-      - plex-services
+      - traefik-proxy
     volumes:
       - config:/config
     restart: unless-stopped
 
 networks:
-  default:
-  nginx-proxy:
-    external: true
-  plex-services:
+  traefik-proxy:
     external: true
 
 volumes:

@@ -22,14 +22,12 @@ services:
       - 22000:22000/udp
       - 21027:21027/udp
     networks:
-      - nginx-proxy
+      - traefik-proxy
     restart: unless-stopped
 
 networks:
-  default:
-  nginx-proxy:
-    external:
-      name: nginx-proxy
+  traefik-proxy:
+    external: true
 
 volumes:
   config: {}

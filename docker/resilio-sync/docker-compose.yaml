@@ -22,14 +22,12 @@ services:
       - 8888:8888
       - 55555:55555
     networks:
-      - nginx-proxy
+      - traefik-proxy
     restart: unless-stopped
-        
+
 networks:
-  default:
-  nginx-proxy:
-    external:
-      name: nginx-proxy
+  traefik-proxy:
+    external: true
 
 volumes:
   config: {}

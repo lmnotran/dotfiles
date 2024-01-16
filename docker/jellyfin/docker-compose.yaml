@@ -22,8 +22,7 @@ services:
       - VIRTUAL_PORT=8096
       - LETSENCRYPT_HOST=jelly.segfault.rip
     networks:
-      - nginx-proxy
-      - plex-services
+      - traefik-proxy
     ports:
       - 8096:8096
       - 8920:8920 #optional
@@ -47,13 +46,8 @@ services:
       - homepage.description=Jellyfin Media server
 
 networks:
-  default:
-  nginx-proxy:
-    external:
-      name: nginx-proxy
-  plex-services:
-    external:
-      name: plex-services
+  traefik-proxy:
+    external: true
 
 volumes:
   config: {}

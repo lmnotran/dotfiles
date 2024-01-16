@@ -12,8 +12,7 @@ services:
       - VIRTUAL_HOST=bazarr.segfault.rip
       - VIRTUAL_PORT=6767
     networks:
-      - nginx-proxy
-      - plex-services
+      - traefik-proxy
     volumes:
       - config:/config
       - /uhh/videos/anime:/anime
@@ -29,10 +28,14 @@ services:
       - homepage.href=https://bazarr.segfault.rip/
       - homepage.description=A subtitle management tool
 
+      # Traefik
+      - traefik.enable=true
+      - traefik.http.routers.bazarr.rule=Host(`bazarr.segfault.rip`)
+      - traefik.http.routers.bazarr.entrypoints=websecure
+      - traefik.http.routers.bazarr.tls.certresolver=letsencrypt
+
 networks:
-  nginx-proxy:
-    external: true
-  plex-services:
+  traefik-proxy:
     external: true
 
 volumes:

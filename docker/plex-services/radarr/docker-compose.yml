@@ -21,8 +21,7 @@ services:
     ports:
       - 7878:7878
     networks:
-      - nginx-proxy
-      - plex-services
+      - traefik-proxy
     restart: unless-stopped
     labels:
       - homepage.group=Media
@@ -32,10 +31,7 @@ services:
       - homepage.description=A movie manager
 
 networks:
-  default:
-  nginx-proxy:
-    external: true
-  plex-services:
+  traefik-proxy:
     external: true
 
 volumes:

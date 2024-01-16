@@ -11,7 +11,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro # Mounted as read-only
     networks:
-      - default
+      - traefik-proxy
     restart: unless-stopped
   homepage:
     image: ghcr.io/benphelps/homepage:latest
@@ -21,18 +21,17 @@ services:
     volumes:
       - config:/app/config
     networks:
-      - default
-      - nginx-proxy
-      - plex-services
+      - traefik-proxy
+    labels:
+      # Traefik
+      - traefik.enable=true
+      - traefik.http.routers.homepage.rule=Host(`homepage.segfault.rip`)
+      - traefik.http.routers.homepage.entrypoints=websecure
+      - traefik.http.routers.homepage.tls.certresolver=letsencrypt
 
 networks:
-  default:
-  nginx-proxy:
-    external:
-      name: nginx-proxy
-  plex-services:
-    external:
-      name: plex-services
+  traefik-proxy:
+    external: true
 
 volumes:
   config: {}

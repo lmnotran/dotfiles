@@ -4,7 +4,7 @@ services:
   nginx-proxy:
     image: jwilder/nginx-proxy
     networks:
-      - default
+      - nginx-proxy
     ports:
       - "80:80"
       - "443:443"
@@ -19,7 +19,7 @@ services:
   nginx-proxy-acme:
     image: nginxproxy/acme-companion
     networks:
-      - default
+      - nginx-proxy
     environment:
       - DEFAULT_EMAIL=mason@Lmnotran.com
     volumes_from:
@@ -32,7 +32,7 @@ services:
   whoami:
     image: jwilder/whoami
     networks:
-      - default
+      - nginx-proxy
     environment:
       - VIRTUAL_HOST=whoami.local
 
@@ -44,6 +44,6 @@ volumes:
   vhost:
 
 networks:
-  default:
+  nginx-proxy:
     name: nginx-proxy
     external: true

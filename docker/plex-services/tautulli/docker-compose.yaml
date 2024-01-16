@@ -14,20 +14,22 @@ services:
       - VIRTUAL_HOST=tautulli.segfault.rip
       - VIRTUAL_PORT=8181
     networks:
-      - nginx-proxy
-      - plex-services
+      - traefik-proxy
     ports:
-      - 8181:8181
+      - 8181:8181/tcp
     volumes:
       - config:/config
-      - /uhh/plex-config/Library/Application Support/Plex Media Server/Logs:/logs:ro
     restart: unless-stopped
 
+    labels:
+      # Traefik
+      - traefik.enable=true
+      - traefik.http.routers.tautulli.rule=Host(`tautulli.segfault.rip`)
+      - traefik.http.routers.tautulli.entrypoints=websecure
+      - traefik.http.routers.tautulli.tls.certresolver=letsencrypt
+
 networks:
-  default:
-  nginx-proxy:
-    external: true
-  plex-services:
+  traefik-proxy:
     external: true
 
 volumes:

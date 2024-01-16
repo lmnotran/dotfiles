@@ -22,8 +22,7 @@ services:
     ports:
       - 8989:8989
     networks:
-      - nginx-proxy
-      - plex-services
+      - traefik-proxy
     restart: unless-stopped
     labels:
       - homepage.group=Media
@@ -33,10 +32,7 @@ services:
       - homepage.description=A TV series manager
 
 networks:
-  default:
-  nginx-proxy:
-    external: true
-  plex-services:
+  traefik-proxy:
     external: true
 
 volumes:

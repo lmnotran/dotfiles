@@ -17,15 +17,12 @@ services:
     ports:
       - 3001:3001  # <Host Port>:<Container Port>
     networks:
-      - nginx-proxy
-      - plex-services
+      - traefik-proxy
     restart: unless-stopped
 
 networks:
   default:
-  nginx-proxy:
-    external: true
-  plex-services:
+  traefik-proxy:
     external: true
 
 volumes:

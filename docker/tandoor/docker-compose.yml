@@ -37,13 +37,12 @@ services:
       - ./mediafiles:/media
     networks:
       - default
-      - nginx-proxy
+      - traefik-proxy
 
 networks:
   default:
-  nginx-proxy:
-    external:
-      name: nginx-proxy
+  traefik-proxy:
+    external: true
 
 volumes:
   nginx_config:

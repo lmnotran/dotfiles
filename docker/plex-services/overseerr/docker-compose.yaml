@@ -15,10 +15,10 @@ services:
       - LETSENCRYPT_HOST=request.segfault.rip
     volumes:
       - config:/config # Contains all relevant configuration files.
-        #ports:
-            #  - 5055:5055/tcp # Web UI
+    ports:
+      - 5055:5055/tcp # Web UI
     networks:
-      - nginx-proxy
+      - traefik-proxy
     labels:
       - homepage.group=Media
       - homepage.name=Overseerr
@@ -26,10 +26,15 @@ services:
       - homepage.href=https://request.segfault.rip/
       - homepage.description=A request management and media discovery tool
 
+      # Traefik
+      - traefik.enable=true
+      - traefik.http.routers.overseerr.rule=Host(`request.segfault.rip`)
+      - traefik.http.routers.overseerr.entrypoints=websecure
+      - traefik.http.routers.overseerr.tls.certresolver=letsencrypt
+
 networks:
-  default:
-  nginx-proxy:
+  traefik-proxy:
     external: true
 
 volumes:
-        config: {}
+  config: {}
