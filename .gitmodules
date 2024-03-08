@@ -1,3 +1,12 @@
 [submodule ".tmux"]
 	path = .tmux
 	url = git@github.com:lmnotran/.tmux.git
+[submodule ".oh-my-zsh/custom/spaceship-prompt"]
+	path = .oh-my-zsh/custom/spaceship-prompt
+	url = https://github.com/spaceship-prompt/spaceship-prompt.git
+[submodule ".oh-my-zsh/custom/zsh-autosuggestions"]
+	path = .oh-my-zsh/custom/zsh-autosuggestions
+	url = https://github.com/zsh-users/zsh-autosuggestions.git
+[submodule ".oh-my-zsh/custom/fast-syntax-highlighting"]
+	path = .oh-my-zsh/custom/fast-syntax-highlighting
+	url = https://github.com/zdharma-continuum/fast-syntax-highlighting
