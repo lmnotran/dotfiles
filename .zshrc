@@ -140,6 +140,7 @@ source $ZSH/oh-my-zsh.sh
 # alias zshconfig="mate ~/.zshrc"
 # alias ohmyzsh="mate ~/.oh-my-zsh"
 #
+source $DOTFILES/git.plugin.overrides.zsh
 
 export QT_GRAPHICSSYSTEM=native
 export GPG_TTY=$(tty)
