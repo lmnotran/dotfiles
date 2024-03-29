@@ -1,19 +1,4 @@
 zmodload zsh/zprof
-export PATH="/opt/homebrew/bin:$PATH"
-
-add_to_path=(
-    "/home/$USER/.local/bin"
-    "/usr"
-    "/usr/local"
-    "/opt/homebrew/opt/binutils/bin"
-)
-for p in add_to_path; do
-    if [ ! -d "$p" ]; then
-    #     echo "Skipping ${p}"
-        continue
-    fi
-    export PATH="${p}:${PATH}"
-done
 
 # Lmno dotfiles
 export LMNOTRAN_DOTFILES=~/repos/dotfiles
@@ -21,6 +6,10 @@ source $LMNOTRAN_DOTFILES/lmnotran.profile
 
 # If you come from bash you might have to change your $PATH.
 # export PATH=$HOME/bin:/usr/local/bin:$PATH
+# Source machine-specific-configs
+MACHINE_BEFORE_OMZ_ZSHRC=$LMNOTRAN_DOTFILES/machine-specific-config/$(hostname)/before-omz.zshrc
+[ -f $MACHINE_BEFORE_OMZ_ZSHRC ] && source $MACHINE_BEFORE_OMZ_ZSHRC
+
 export TERM="xterm-256color"
 # Path to your oh-my-zsh installation.
 export ZSH="${HOME}/.oh-my-zsh"
@@ -152,8 +141,8 @@ export ZSH_TMUX_UNICODE=true
 export GO111MODULE=on
 
 # Source machine-specific-configs
-MACHINE_ZSHRC=$LMNOTRAN_DOTFILES/machine-specific-config/$(hostname)/.zshrc
-[ -f $MACHINE_ZSHRC ] && source $MACHINE_ZSHRC
+MACHINE_AFTER_OMZ_ZSHRC=$LMNOTRAN_DOTFILES/machine-specific-config/$(hostname)/after-omz.zshrc
+[ -f $MACHINE_AFTER_OMZ_ZSHRC ] && source $MACHINE_AFTER_OMZ_ZSHRC
 
 # Work user
 MACHINE_SILABS_ZSHRC=$LMNOTRAN_DOTFILES/machine-specific-config/$(hostname)/silabs.zshrc
