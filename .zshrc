@@ -66,16 +66,24 @@ HIST_STAMPS="yyyy-mm-dd"
 # Example format: plugins=(rails git textmate ruby lighthouse)
 # Add wisely, as too many plugins slow down shell startup.
 plugins=(
-    git
-    fzf
     # Built-in
     ssh-agent
     colored-man-pages
-    zsh-autosuggestions
-    pyenv
-    # fast-syntax-highlighting
-    iterm2
 )
+
+plugins_to_check=(
+    git
+    fzf
+    pyenv
+)
+# Check if the commands in plugins_to_check exist and if they do, append them to the list of plugins
+for plugin in ${plugins_to_check[@]}; do
+    command -v $plugin >/dev/null && plugins+=($plugin)
+done
+
+# Add any machine-specific plugins
+machine_specific_plugins=$LMNOTRAN_DOTFILES/machine-specific-config/$(hostname)/plugins.zsh
+[ -f $machine_specific_plugins ] && source $machine_specific_plugins
 
 bindkey '^ ' autosuggest-accept
 
