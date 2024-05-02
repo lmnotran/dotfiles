@@ -54,6 +54,31 @@ COMPLETION_WAITING_DOTS="true"
 HIST_STAMPS="yyyy-mm-dd"
 
 
+#===============================================================================
+# antigen
+#===============================================================================
+ANTIGEN_LOG=$DOTFILES/antigen.log
+source $DOTFILES/antigen.zsh
+
+# Load oh-my-zsh library.
+antigen use oh-my-zsh
+
+# Load bundles from the default repo (oh-my-zsh).
+antigen bundle autojump
+antigen bundle command-not-found
+antigen bundle docker
+antigen bundle git
+antigen bundle pip
+
+# Load bundles from external repos.
+antigen bundle zsh-users/zsh-autosuggestions
+antigen bundle zdharma-continuum/fast-syntax-highlighting
+
+# Load the theme.
+antigen theme spaceship
+
+# Tell Antigen that you're done.
+antigen apply
 
 
 #===============================================================================
