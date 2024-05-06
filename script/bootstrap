@@ -181,11 +181,6 @@ main()
         bootstrap_mac
     fi
 
-    if [[ "$(whoami)" == "matran"* ]]; then
-        echo "Bootstrapping prev"
-        ${script_dir}/bootstrap_prev
-    fi
-
     echo "Bootstrap completed successfully."
 }
 
