@@ -12,25 +12,9 @@ if command -v date > /dev/null; then
 elif command -v gdate > /dev/null; then
     DATE=gdata
 fi
-                                                                                timeraaaaa=$(($($DATE +%s%N)/1000000))
 REPO_DIR="$(git -C ${script_dir} rev-parse --show-toplevel)"
-                                                                                nowaaaaa=$(($($DATE +%s%N)/1000000))
-                                                                                elapsedaaaaa=$(($nowaaaaa-$timeraaaaa))
-                                                                                # echo $elapsedaaaaa":" REPO_DIR
 
 export DOTFILES=$REPO_DIR
-                                                                                timeraaaaa=$(($($DATE +%s%N)/1000000))
 source $REPO_DIR/utils/bash_utils.sh
-                                                                                nowaaaaa=$(($($DATE +%s%N)/1000000))
-                                                                                elapsedaaaaa=$(($nowaaaaa-$timeraaaaa))
-                                                                                # echo $elapsedaaaaa":" source $REPO_DIR/utils/bash_utils.sh
-                                                                                timeraaaaa=$(($($DATE +%s%N)/1000000))
 source $REPO_DIR/utils/network.sh
-                                                                                nowaaaaa=$(($($DATE +%s%N)/1000000))
-                                                                                elapsedaaaaa=$(($nowaaaaa-$timeraaaaa))
-                                                                                # echo $elapsedaaaaa":" source $REPO_DIR/utils/network.sh
-                                                                                timeraaaaa=$(($($DATE +%s%N)/1000000))
 source $REPO_DIR/utils/pushover.sh
-                                                                                nowaaaaa=$(($($DATE +%s%N)/1000000))
-                                                                                elapsedaaaaa=$(($nowaaaaa-$timeraaaaa))
-                                                                                # echo $elapsedaaaaa":" source $REPO_DIR/utils/pushover.sh
