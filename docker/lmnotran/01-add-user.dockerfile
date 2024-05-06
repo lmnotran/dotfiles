@@ -4,7 +4,7 @@ FROM ${BASE_IMAGE}
 ARG USER_NAME=mason
 ARG USER_UID=1000
 ARG USER_GID=1000
-ARG USER_GROUP_NAME=matran
+ARG USER_GROUP_NAME=${USER_NAME}
 ARG USER_HOME=/home/${USER_NAME}
 
 # Setup non-root user with sudo permissions

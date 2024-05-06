@@ -18,6 +18,7 @@ command -v pyenv >/dev/null && eval "$(pyenv init -)"
 #===============================================================================
 # Source machine-specific-configs (before oh-my-zsh is sourced)
 #===============================================================================
+
 MACHINE_BEFORE_OMZ_ZSHRC=$LMNOTRAN_DOTFILES/machine-specific-config/$(hostname)/before-omz.zshrc
 [ -f $MACHINE_BEFORE_OMZ_ZSHRC ] && source $MACHINE_BEFORE_OMZ_ZSHRC
 
@@ -115,5 +116,5 @@ MACHINE_AFTER_OMZ_ZSHRC=$LMNOTRAN_DOTFILES/machine-specific-config/$(hostname)/a
 [ -f $MACHINE_AFTER_OMZ_ZSHRC ] && source $MACHINE_AFTER_OMZ_ZSHRC
 
 # Work user
-MACHINE_SILABS_ZSHRC=$LMNOTRAN_DOTFILES/machine-specific-config/$(hostname)/silabs.zshrc
-[[ "$(whoami)" == "matran"* ]] && [ -f $MACHINE_SILABS_ZSHRC ] && source $MACHINE_SILABS_ZSHRC
+MACHINE_LEGO_ZSHRC=$LMNOTRAN_DOTFILES/machine-specific-config/$(hostname)/lego.zshrc
+[[ "$(whoami)" == "usmastra"* ]] && [ -f $MACHINE_LEGO_ZSHRC ] && source $MACHINE_LEGO_ZSHRC

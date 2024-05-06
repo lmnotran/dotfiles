@@ -10,7 +10,6 @@ show_always = true
 [hostname]
 ssh_only = false
 format = "[$ssh_symbol](bold blue)@[$hostname](bold red)"
-trim_at = ".silabs.com"
 disabled = false
 
 [directory]
