@@ -181,11 +181,6 @@ main()
         bootstrap_mac
     fi
 
-    if [[ "$(whoami)" == "matran"* ]]; then
-        echo "Bootstrapping silabs"
-        ${script_dir}/bootstrap_silabs
-    fi
-
     echo "Bootstrap completed successfully."
 }
 
