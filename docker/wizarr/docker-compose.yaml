@@ -1,0 +1,33 @@
+---
+version: "3.5"
+
+services:
+  wizarr:
+    image: ghcr.io/wizarrrr/wizarr:latest
+    container_name: wizarr
+    restart: unless-stopped
+    environment:
+      - TZ=America/New_York # Specify a timezone to use
+      - PUID=1000 # User ID to run as
+      - PGID=33 # Group ID to run as
+      - VIRTUAL_PORT=5690
+      - VIRTUAL_HOST=invite.segfault.rip
+      - LETSENCRYPT_HOST=invite.segfault.rip
+    volumes:
+      - config:/data/database # Contains all relevant configuration files.
+    ports:
+      - 5690:5690/tcp # Web UI
+    networks:
+      - traefik-proxy
+    labels:
+      # Traefik
+      - traefik.enable=true
+      - traefik.http.routers.invite.rule=Host(`invite.segfault.rip`)
+      - traefik.http.routers.invite.entrypoints=websecure
+      - traefik.http.routers.invite.tls.certresolver=letsencrypt
+networks:
+  traefik-proxy:
+    external: true
+
+volumes:
+  config: {}
