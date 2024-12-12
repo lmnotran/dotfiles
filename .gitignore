@@ -2,3 +2,7 @@
 .spaceship.zsh.zwc
 .DS_Store
 **/__pycache__
+*.log
+*-cli-read.txt
+*-cli-send.txt
+.zsh_plugins.zsh
