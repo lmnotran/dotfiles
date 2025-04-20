@@ -1,6 +1,6 @@
 [submodule ".tmux"]
 	path = .tmux
-	url = git@github.com:lmnotran/.tmux.git
+	url = git@github.com:gpakosz/.tmux.git
 [submodule ".oh-my-zsh/custom/spaceship-prompt"]
 	path = .oh-my-zsh/custom/spaceship-prompt
 	url = https://github.com/spaceship-prompt/spaceship-prompt.git
