@@ -1,0 +1,33 @@
+
+services:
+  ics-fixer:
+    build: .
+    networks:
+      - traefik-proxy
+    container_name: ics-fixer
+    # Expose port 1001 on the host
+    ports:
+      - "1001:8000"
+    # Provide your Outlook ICS link via env or .env file (recommended)
+    env_file:
+      - .env
+    # Lightweight liveness check
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+    labels:
+      # Traefik
+      - traefik.enable=true
+      - traefik.http.routers.ics-fixer.rule=Host(`ics.segfault.rip`)
+      - traefik.http.routers.ics-fixer.entrypoints=websecure
+      - traefik.http.routers.ics-fixer.tls.certresolver=letsencrypt
+      - traefik.http.services.ics-fixer.loadbalancer.server.port=8000
+      - traefik.http.services.ics-fixer.loadbalancer.sticky=true
+
+networks:
+  traefik-proxy:
+    external: true
