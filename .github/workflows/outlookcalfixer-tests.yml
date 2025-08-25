@@ -1,0 +1,26 @@
+name: outlookcalfixer tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: docker/outlookcalfixer
+          sparse-checkout-cone-mode: true
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+          cache: 'pip'
+          cache-dependency-path: docker/outlookcalfixer/requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r docker/outlookcalfixer/requirements.txt pytest
+      - name: Run tests
+        run: pytest docker/outlookcalfixer/test_app.py
