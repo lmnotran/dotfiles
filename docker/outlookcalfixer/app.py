@@ -84,7 +84,7 @@ def rewrite_ics(ics_text: str) -> str:
     # If any RECURRENCE-ID params include the Microsoft TZID inside quotes, they are handled by the same pattern.
 
     # Ensure a Europe/Copenhagen VTIMEZONE exists
-    has_cph = re.search(r'BEGIN:VTIMEZONE[\\s\\S]*?TZID:Europe/Copenhagen[\\s\\S]*?END:VTIMEZONE', ics) is not None
+    has_cph = re.search(r'BEGIN:VTIMEZONE[\s\S]*?TZID:Europe/Copenhagen[\s\S]*?END:VTIMEZONE', ics) is not None
     if not has_cph:
         # Convert back to CRLF temporarily to make downstream insertions use CRLF consistently
         ics = ics.replace('\\n', '\\r\\n')
