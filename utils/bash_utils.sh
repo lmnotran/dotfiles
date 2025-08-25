@@ -3,7 +3,7 @@
 function contains() {
     list=$1
     x=$2
-    [[ $list =~ (^|[[:space:]])$x($|[[:space:]]) ]] && exit 0 || exit 1
+    [[ "$list" =~ (^|[[:space:]])"$x"($|[[:space:]]) ]] && return 0 || return 1
 }
 
 function gitCloneOrPull() {
