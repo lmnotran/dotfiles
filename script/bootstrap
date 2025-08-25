@@ -99,9 +99,9 @@ install_links()
 {
     # Link files from the repo to the home directory
 
+    # Back up existing .zshrc instead of exiting
     if [ -f "${HOME}/.zshrc" ]; then
-        # Non-interactive shell
-        # Exit if the file exists
+        echo "Backing up existing .zshrc to .zshrc.bak"
         mv "${HOME}/.zshrc" "${HOME}/.zshrc.bak"
     fi
 
