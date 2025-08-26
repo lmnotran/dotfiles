@@ -1,33 +1,40 @@
-zmodload zsh/zprof
+# Managed via GNU Stow (package: zsh)
+# This file was migrated from the repo root `.zshrc` and now computes DOTFILES
+# based on its own location under `stow/zsh/.zshrc`.
 
-# Check if ~/.zshrc is a symlink
+setopt EXTENDED_GLOB
 
-if [[ -L "${HOME}/.zshrc" ]]; then
-    # If it is, resolve the symlink
-    DOTFILES="$(dirname $(readlink -f "${HOME}/.zshrc"))"
-else
-    # Otherwise, assume it's in the same directory as this file
-    DOTFILES="$(dirname $0)"
-fi
+# Resolve absolute path to this file even when sourced
+local __this_file=${(%):-%N}
+local __this_path=${__this_file:A}
 
-export DOTFILES
+# Repo directory: .../dotfiles (this file lives at dotfiles/stow/zsh/.zshrc)
+local DOTFILES_DIR=${__this_path:h:h:h}
+export DOTFILES=$DOTFILES_DIR
+
+# ---------------------------------------------------------------------------
+# Begin: original configuration migrated from repo root .zshrc
+# ---------------------------------------------------------------------------
+
+# zmodload zsh/zprof
+
 
 #===============================================================================
 # pyenv
 #===============================================================================
-# This needs to happen before the pyenv plugin is sourced
+# pyenv must be before plugins
 export PYENV_ROOT="$HOME/.pyenv"
 command -v pyenv >/dev/null || export PATH="$PYENV_ROOT/bin:$PATH"
 command -v pyenv >/dev/null && eval "$(pyenv init -)"
 
 #===============================================================================
-# Source machine-specific-configs (before oh-my-zsh is sourced)
+# Source machine-specific-configs (before plugin manager is sourced)
 #===============================================================================
 MACHINE_ENV=$DOTFILES/machine-specific-config/$(hostname)/.env
-[ -f $MACHINE_ENV ] && source $MACHINE_ENV
+[[ -f $MACHINE_ENV ]] && source $MACHINE_ENV
 
 MACHINE_BEFORE_OMZ_ZSHRC=$DOTFILES/machine-specific-config/$(hostname)/before-omz.zshrc
-[ -f $MACHINE_BEFORE_OMZ_ZSHRC ] && source $MACHINE_BEFORE_OMZ_ZSHRC
+[[ -f $MACHINE_BEFORE_OMZ_ZSHRC ]] && source $MACHINE_BEFORE_OMZ_ZSHRC
 
 export TERM="xterm-256color"
 
@@ -47,12 +54,15 @@ COMPLETION_WAITING_DOTS="true"
 # see 'man strftime' for details.
 HIST_STAMPS="yyyy-mm-dd"
 
-#===============================================================================
-# antidote
-#===============================================================================
-source $DOTFILES/.antidote/antidote.zsh
 
-antidote load
+#===============================================================================
+# antidote plugin manager
+#===============================================================================
+if [[ -r $DOTFILES/.antidote/antidote.zsh ]]; then
+  source $DOTFILES/.antidote/antidote.zsh
+  antidote load
+fi
+
 
 #===============================================================================
 # User configuration
@@ -71,17 +81,23 @@ export EDITOR="$VISUAL"
 source $DOTFILES/git.plugin.overrides.zsh
 
 export GPG_TTY=$(tty)
-
 export ZSH_TMUX_UNICODE=true
 export GO111MODULE=on
 
 # Source machine-specific-configs
 MACHINE_AFTER_OMZ_ZSHRC=$DOTFILES/machine-specific-config/$(hostname)/after-omz.zshrc
-[ -f $MACHINE_AFTER_OMZ_ZSHRC ] && source $MACHINE_AFTER_OMZ_ZSHRC
+[[ -f $MACHINE_AFTER_OMZ_ZSHRC ]] && source $MACHINE_AFTER_OMZ_ZSHRC
 
 # Work user
 MACHINE_LEGO_ZSHRC=$DOTFILES/machine-specific-config/$(hostname)/lego.zshrc
-[[ "$(whoami)" == "usmastra"* ]] && [ -f $MACHINE_LEGO_ZSHRC ] && source $MACHINE_LEGO_ZSHRC
+[[ "$(whoami)" == "usmastra"* ]] && [[ -f $MACHINE_LEGO_ZSHRC ]] && source $MACHINE_LEGO_ZSHRC
 
-# Uncomment the following line to get zprof output
+# Optional: local overrides outside of git
+[[ -r $HOME/.zshrc.local ]] && source $HOME/.zshrc.local
+
+# zprof diagnostics
 # zprof
+
+# ---------------------------------------------------------------------------
+# End: original configuration
+# ---------------------------------------------------------------------------

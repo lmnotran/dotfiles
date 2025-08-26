@@ -1,0 +1,8 @@
+#!/usr/bin/env zsh
+# Simple helper to cd into DOTFILES repo
+if [[ -n "$DOTFILES" && -d "$DOTFILES" ]]; then
+  cd "$DOTFILES" || exit 1
+else
+  echo "DOTFILES not set or invalid" >&2
+  exit 2
+fi
