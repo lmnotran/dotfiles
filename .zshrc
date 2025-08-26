@@ -58,7 +58,15 @@ antidote load
 # User configuration
 #===============================================================================
 # Preferred editor
-export EDITOR='nvim'
+#   If inside of vscode, use code, else check for nvim, else vim
+if [[ "$TERM_PROGRAM" == "vscode" ]]; then
+    export VISUAL='code --wait --reuse-window'
+elif command -v nvim >/dev/null; then
+    export VISUAL='nvim'
+else
+    export VISUAL='vim'
+fi
+export EDITOR="$VISUAL"
 
 source $DOTFILES/git.plugin.overrides.zsh
 
