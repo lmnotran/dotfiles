@@ -1,24 +1,32 @@
 # Simple docker-compose.yml
 # You can change your port or volume location
 
-version: '3.3'
-
 services:
   uptime-kuma:
     image: louislam/uptime-kuma:latest
     container_name: uptime-kuma
     environment:
       - TZ=America/New_York
-      - VIRTUAL_HOST=status.bigboi.segfault.rip
+      - VIRTUAL_HOST=status.bao.segfault.rip
       - VIRTUAL_PORT=3001
-      - LETSENCRYPT_HOST=status.bigboi.segfault.rip
+      - LETSENCRYPT_HOST=status.bao.segfault.rip
     volumes:
       - config:/app/data
+      # Docker
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - 3001:3001  # <Host Port>:<Container Port>
     networks:
       - traefik-proxy
     restart: unless-stopped
+
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.uptime-kuma.rule: "Host(`status.bao.segfault.rip`)"
+      traefik.http.routers.uptime-kuma.entrypoints: "websecure"
+      traefik.http.routers.uptime-kuma.tls: "true"
+      traefik.http.routers.uptime-kuma.tls.certresolver: "letsencrypt"
+
 
 networks:
   default:
