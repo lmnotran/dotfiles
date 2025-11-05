@@ -30,10 +30,11 @@ export DOTFILES=$DOTFILES_DIR
 #===============================================================================
 # Source machine-specific-configs (before plugin manager is sourced)
 #===============================================================================
-MACHINE_ENV=$DOTFILES/machine-specific-config/$(hostname)/.env
+MACHINE_BASE_DIR=$DOTFILES/machine-specific-config/$(whoami)@$(hostname -f)
+MACHINE_ENV=$MACHINE_BASE_DIR/.env
 [[ -f $MACHINE_ENV ]] && source $MACHINE_ENV
 
-MACHINE_BEFORE_OMZ_ZSHRC=$DOTFILES/machine-specific-config/$(hostname)/before-omz.zshrc
+MACHINE_BEFORE_OMZ_ZSHRC=$MACHINE_BASE_DIR/before-omz.zshrc
 [[ -f $MACHINE_BEFORE_OMZ_ZSHRC ]] && source $MACHINE_BEFORE_OMZ_ZSHRC
 
 # If you come from bash you might have to change your $PATH.
