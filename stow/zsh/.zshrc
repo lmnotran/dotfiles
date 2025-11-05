@@ -36,6 +36,8 @@ MACHINE_ENV=$DOTFILES/machine-specific-config/$(hostname)/.env
 MACHINE_BEFORE_OMZ_ZSHRC=$DOTFILES/machine-specific-config/$(hostname)/before-omz.zshrc
 [[ -f $MACHINE_BEFORE_OMZ_ZSHRC ]] && source $MACHINE_BEFORE_OMZ_ZSHRC
 
+# If you come from bash you might have to change your $PATH.
+# export PATH=$HOME/bin:/usr/local/bin:$PATH
 export TERM="xterm-256color"
 
 #===============================================================================
@@ -68,15 +70,22 @@ fi
 # User configuration
 #===============================================================================
 # Preferred editor
-#   If inside of vscode, use code, else check for nvim, else vim
-if [[ "$TERM_PROGRAM" == "vscode" ]]; then
-    export VISUAL='code --wait --reuse-window'
-elif command -v nvim >/dev/null; then
-    export VISUAL='nvim'
+# Use VS Code only inside VS Code's integrated terminal; else fall back to nvim/vi
+if [[ "$TERM_PROGRAM" == "vscode" || -n "$VSCODE_PID" || -n "$VSCODE_GIT_IPC_HANDLE" ]]; then
+  if command -v code >/dev/null 2>&1; then
+    export EDITOR="code --wait --reuse-window"
+  else
+    export EDITOR="nvim"
+  fi
 else
-    export VISUAL='vim'
+  if command -v nvim >/dev/null 2>&1; then
+    export EDITOR="nvim"
+  else
+    export EDITOR="vi"
+  fi
 fi
-export EDITOR="$VISUAL"
+export VISUAL="$EDITOR"
+export GIT_EDITOR="$EDITOR"
 
 source $DOTFILES/git.plugin.overrides.zsh
 
