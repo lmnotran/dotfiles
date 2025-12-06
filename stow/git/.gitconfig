@@ -1,0 +1,7 @@
+[user]
+	name = "Mason Tran"
+	email = "mason@Lmnotran.com"
+[commit]
+#        gpgsign = true
+[pull]
+	rebase = true

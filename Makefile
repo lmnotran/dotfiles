@@ -5,7 +5,7 @@ STOW ?= stow
 UNSTOW ?= $(STOW) -D
 STOW_DIR := $(CURDIR)/stow
 TARGET ?= $(HOME)
-PACKAGES ?= zsh bin
+PACKAGES ?= zsh bin git
 
 .PHONY: help
 help:
