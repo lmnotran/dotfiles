@@ -22,10 +22,10 @@ export DOTFILES=$DOTFILES_DIR
 #===============================================================================
 # pyenv
 #===============================================================================
-# # pyenv must be before plugins
-# export PYENV_ROOT="$HOME/.pyenv"
-# command -v pyenv >/dev/null || export PATH="$PYENV_ROOT/bin:$PATH"
-# command -v pyenv >/dev/null && eval "$(pyenv init -)"
+# pyenv must be before plugins
+export PYENV_ROOT="$HOME/.pyenv"
+command -v pyenv >/dev/null || export PATH="$PYENV_ROOT/bin:$PATH"
+command -v pyenv >/dev/null && eval "$(pyenv init -)"
 
 #===============================================================================
 # Source machine-specific-configs (before plugin manager is sourced)
@@ -111,3 +111,4 @@ MACHINE_LEGO_ZSHRC=$DOTFILES/machine-specific-config/$(hostname)/lego.zshrc
 # ---------------------------------------------------------------------------
 # End: original configuration
 # ---------------------------------------------------------------------------
+
