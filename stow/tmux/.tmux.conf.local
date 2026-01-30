@@ -1,0 +1,18 @@
+# ~/.tmux.conf.local - Personal tmux customizations
+#
+# This file is sourced by gpakosz/.tmux after the main config.
+# See https://github.com/gpakosz/.tmux for available options.
+#
+# Copy settings from .tmux/.tmux.conf.local and customize here.
+
+# -- general -------------------------------------------------------------------
+
+# -- display -------------------------------------------------------------------
+
+# -- navigation ----------------------------------------------------------------
+
+# -- copy mode -----------------------------------------------------------------
+
+# -- buffers -------------------------------------------------------------------
+
+# -- user customizations -------------------------------------------------------
