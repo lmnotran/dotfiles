@@ -1,0 +1,196 @@
+#!/bin/bash
+#
+# Downloads SSH and GPG keys from Bitwarden and installs them locally.
+# Requires: Bitwarden CLI (bw) - https://bitwarden.com/help/cli/
+#
+# Usage:
+#   1. Store your SSH private/public keys as attachments in a Bitwarden item
+#   2. Store your GPG private key as an attachment in a Bitwarden item
+#   3. Update the ITEM_NAME variables below with your Bitwarden item names
+#   4. Run this script: ./script/setup-keys
+#
+
+set -euo pipefail
+
+# =============================================================================
+# Configuration - Update these with your Bitwarden item names
+# =============================================================================
+SSH_ITEM_NAME="SSH Key - Personal"      # Name of the Bitwarden item with SSH keys
+GPG_ITEM_NAME="GPG Key - Personal"      # Name of the Bitwarden item with GPG key
+
+# Attachment filenames as stored in Bitwarden
+SSH_PRIVATE_KEY_FILENAME="id_ed25519"
+SSH_PUBLIC_KEY_FILENAME="id_ed25519.pub"
+GPG_PRIVATE_KEY_FILENAME="private.gpg"
+
+# =============================================================================
+# Helper functions
+# =============================================================================
+info() {
+    echo -e "\033[1;34m==>\033[0m $1"
+}
+
+success() {
+    echo -e "\033[1;32m==>\033[0m $1"
+}
+
+error() {
+    echo -e "\033[1;31mError:\033[0m $1" >&2
+}
+
+check_bw_installed() {
+    if ! command -v bw &> /dev/null; then
+        error "Bitwarden CLI (bw) is not installed."
+        echo "Install it from: https://bitwarden.com/help/cli/"
+        echo "  - macOS: brew install bitwarden-cli"
+        echo "  - Linux: snap install bw"
+        exit 1
+    fi
+}
+
+ensure_logged_in() {
+    local status
+    status=$(bw status | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
+    
+    case "$status" in
+        "unauthenticated")
+            info "Please log in to Bitwarden..."
+            bw login
+            ;;
+        "locked")
+            info "Unlocking Bitwarden vault..."
+            ;;
+        "unlocked")
+            info "Bitwarden vault is already unlocked"
+            return 0
+            ;;
+    esac
+    
+    if [ -z "${BW_SESSION:-}" ]; then
+        export BW_SESSION=$(bw unlock --raw)
+    fi
+}
+
+get_item_id() {
+    local item_name="$1"
+    local item_id
+    
+    item_id=$(bw get item "$item_name" 2>/dev/null | jq -r '.id') || {
+        error "Could not find Bitwarden item: $item_name"
+        return 1
+    }
+    
+    echo "$item_id"
+}
+
+# =============================================================================
+# SSH Key Setup
+# =============================================================================
+setup_ssh_keys() {
+    info "Setting up SSH keys..."
+    
+    local item_id
+    item_id=$(get_item_id "$SSH_ITEM_NAME") || return 1
+    
+    # Create .ssh directory with correct permissions
+    mkdir -p ~/.ssh
+    chmod 700 ~/.ssh
+    
+    # Download private key
+    info "Downloading SSH private key..."
+    bw get attachment "$SSH_PRIVATE_KEY_FILENAME" --itemid "$item_id" --output ~/.ssh/"$SSH_PRIVATE_KEY_FILENAME"
+    chmod 600 ~/.ssh/"$SSH_PRIVATE_KEY_FILENAME"
+    
+    # Download public key
+    info "Downloading SSH public key..."
+    bw get attachment "$SSH_PUBLIC_KEY_FILENAME" --itemid "$item_id" --output ~/.ssh/"$SSH_PUBLIC_KEY_FILENAME"
+    chmod 644 ~/.ssh/"$SSH_PUBLIC_KEY_FILENAME"
+    
+    success "SSH keys installed to ~/.ssh/"
+}
+
+# =============================================================================
+# GPG Key Setup
+# =============================================================================
+setup_gpg_keys() {
+    info "Setting up GPG keys..."
+    
+    local item_id
+    item_id=$(get_item_id "$GPG_ITEM_NAME") || return 1
+    
+    # Download to temp file
+    local temp_gpg
+    temp_gpg=$(mktemp)
+    trap "rm -f $temp_gpg" EXIT
+    
+    info "Downloading GPG private key..."
+    bw get attachment "$GPG_PRIVATE_KEY_FILENAME" --itemid "$item_id" --output "$temp_gpg"
+    
+    # Import the key
+    info "Importing GPG key..."
+    gpg --import "$temp_gpg"
+    
+    # Clean up
+    rm -f "$temp_gpg"
+    
+    success "GPG key imported successfully"
+    
+    # Show imported key
+    echo ""
+    info "Imported GPG keys:"
+    gpg --list-secret-keys --keyid-format LONG
+}
+
+# =============================================================================
+# Main
+# =============================================================================
+main() {
+    echo "========================================"
+    echo "  Bitwarden Key Setup Script"
+    echo "========================================"
+    echo ""
+    
+    check_bw_installed
+    ensure_logged_in
+    
+    info "Syncing Bitwarden vault..."
+    bw sync
+    
+    echo ""
+    
+    # Interactive menu
+    echo "What would you like to set up?"
+    echo "  1) SSH keys only"
+    echo "  2) GPG keys only"
+    echo "  3) Both SSH and GPG keys"
+    echo "  q) Quit"
+    echo ""
+    read -rp "Choice [1-3, q]: " choice
+    
+    case "$choice" in
+        1)
+            setup_ssh_keys
+            ;;
+        2)
+            setup_gpg_keys
+            ;;
+        3)
+            setup_ssh_keys
+            echo ""
+            setup_gpg_keys
+            ;;
+        q|Q)
+            echo "Exiting."
+            exit 0
+            ;;
+        *)
+            error "Invalid choice"
+            exit 1
+            ;;
+    esac
+    
+    echo ""
+    success "Key setup complete!"
+}
+
+main "$@"

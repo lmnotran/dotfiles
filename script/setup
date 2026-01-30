@@ -1,0 +1,91 @@
+#!/bin/bash
+#
+# setup - One-command setup for a new machine
+#
+# Usage: ./script/setup [--dry-run]
+#
+# This script:
+#   1. Installs dependencies (apt/brew)
+#   2. Initializes git submodules
+#   3. Stows dotfiles to $HOME
+#
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(dirname "$SCRIPT_DIR")"
+
+DRY_RUN=false
+[[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Colors
+# ─────────────────────────────────────────────────────────────────────────────
+
+if [[ -t 1 ]]; then
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[0;33m'
+    BLUE='\033[0;34m'
+    MAGENTA='\033[0;35m'
+    CYAN='\033[0;36m'
+    BOLD='\033[1m'
+    RESET='\033[0m'
+else
+    RED='' GREEN='' YELLOW='' BLUE='' MAGENTA='' CYAN='' BOLD='' RESET=''
+fi
+
+log()     { echo -e "${CYAN}[setup]${RESET} $*"; }
+log_step() { echo -e "${BOLD}${BLUE}==>${RESET} ${BOLD}$*${RESET}"; }
+log_ok()  { echo -e "${GREEN}✓${RESET} $*"; }
+log_warn() { echo -e "${YELLOW}⚠${RESET} $*"; }
+
+main() {
+    cd "$REPO_DIR"
+
+    echo ""
+    echo -e "${BOLD}${MAGENTA}  ┌─────────────────────────────────────┐${RESET}"
+    echo -e "${BOLD}${MAGENTA}  │       ${CYAN}Dotfiles Setup${MAGENTA}                │${RESET}"
+    echo -e "${BOLD}${MAGENTA}  └─────────────────────────────────────┘${RESET}"
+    echo ""
+
+    log_step "Step 1/3: Installing dependencies"
+    if $DRY_RUN; then
+        "$SCRIPT_DIR/install-deps" --dry-run
+    else
+        "$SCRIPT_DIR/install-deps"
+    fi
+    log_ok "Dependencies installed"
+    echo ""
+
+    log_step "Step 2/3: Stowing dotfiles"
+    if $DRY_RUN; then
+        make dry-run PACKAGES="zsh bin git nvim tmux"
+    else
+        # Non-interactive stow (skip the prompts from bootstrap-stow.sh)
+        make stow PACKAGES="zsh bin git nvim tmux"
+    fi
+    log_ok "Dotfiles stowed"
+    echo ""
+
+    log_step "Step 3/3: Setting zsh as default shell"
+    if $DRY_RUN; then
+        log "(dry-run) Would set zsh as default shell"
+    else
+        if [[ "$SHELL" != *"zsh"* ]]; then
+            log "Changing default shell to zsh..."
+            chsh -s "$(which zsh)" || log_warn "Failed to change shell (may need sudo)"
+        else
+            log_ok "zsh is already the default shell"
+        fi
+    fi
+    echo ""
+
+    echo -e "${BOLD}${GREEN}✓ Setup complete!${RESET}"
+    echo ""
+    echo -e "${BOLD}Next steps:${RESET}"
+    echo -e "  ${CYAN}1.${RESET} Restart your terminal (or run: ${YELLOW}exec zsh${RESET})"
+    echo -e "  ${CYAN}2.${RESET} Antidote will auto-install zsh plugins on first launch"
+    echo ""
+}
+
+main "$@"
