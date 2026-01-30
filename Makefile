@@ -5,7 +5,7 @@ STOW ?= stow
 UNSTOW ?= $(STOW) -D
 STOW_DIR := $(CURDIR)/stow
 TARGET ?= $(HOME)
-PACKAGES ?= zsh bin git
+PACKAGES ?= $(notdir $(wildcard $(STOW_DIR)/*))
 
 .PHONY: help
 help:
@@ -42,3 +42,16 @@ restow: _check
 dry-run: _check
 	@echo "Dry-run stow (no changes): $(PACKAGES) -> $(TARGET)"
 	@$(STOW) -nv -R -t $(TARGET) -d $(STOW_DIR) $(PACKAGES)
+
+.PHONY: nvim-setup
+nvim-setup:
+	@echo "Checking nvim plugin dependencies..."
+	@command -v rg >/dev/null 2>&1 || echo "Warning: ripgrep (rg) not found - needed for Snacks grep"
+	@command -v fd >/dev/null 2>&1 || echo "Warning: fd not found - needed for Snacks file picker"
+	@command -v lazygit >/dev/null 2>&1 || echo "Warning: lazygit not found - needed for Snacks lazygit"
+	@command -v gcc >/dev/null 2>&1 || command -v clang >/dev/null 2>&1 || echo "Warning: C compiler not found - needed for treesitter"
+	@echo "Installing plugins via lazy.nvim..."
+	@nvim --headless "+Lazy! restore" +qa
+	@echo "Installing treesitter parsers (from ensure_installed)..."
+	@nvim --headless "+TSUpdateSync" +qa
+	@echo "Done! Run 'nvim' to verify setup."
