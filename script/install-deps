@@ -1,0 +1,157 @@
+#!/bin/bash
+#
+# install-deps - Install external dependencies for dotfiles
+#
+# Usage: ./install-deps [--dry-run]
+#
+# Strategy:
+#   - Linux: Use apt for packages available in repos, brew for extras (lazygit, pyenv)
+#   - macOS: Use brew for everything
+#
+set -euo pipefail
+
+DRY_RUN=false
+[[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Define packages per package manager
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Packages available via apt (Linux)
+DEPS_APT=(
+    build-essential
+    cmake
+    coreutils
+    curl
+    fzf
+    git
+    git-lfs
+    htop
+    make
+    ninja-build
+    stow
+    sudo
+    unzip
+    wget
+    zsh
+)
+
+# Packages only available via brew (used on Linux for extras, macOS adds these too)
+DEPS_BREW_EXTRAS=(
+    lazygit
+    pyenv
+)
+
+# Base brew packages for macOS (DEPS_BREW_EXTRAS appended at install time)
+DEPS_BREW_BASE=(
+    coreutils
+    curl
+    fzf
+    git
+    git-lfs
+    grep
+    htop
+    make
+    openjdk@11
+    stow
+    wget
+    zsh
+)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Colors
+# ─────────────────────────────────────────────────────────────────────────────
+
+if [[ -t 1 ]]; then
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[0;33m'
+    BLUE='\033[0;34m'
+    CYAN='\033[0;36m'
+    BOLD='\033[1m'
+    DIM='\033[2m'
+    RESET='\033[0m'
+else
+    RED='' GREEN='' YELLOW='' BLUE='' CYAN='' BOLD='' DIM='' RESET=''
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helper functions
+# ─────────────────────────────────────────────────────────────────────────────
+
+log()  { echo -e "${CYAN}[install-deps]${RESET} $*"; }
+warn() { echo -e "${YELLOW}[install-deps] WARNING:${RESET} $*" >&2; }
+err()  { echo -e "${RED}[install-deps] ERROR:${RESET} $*" >&2; exit 1; }
+
+command_exists() { command -v "$1" &>/dev/null; }
+
+run() {
+    if $DRY_RUN; then
+        log "(dry-run) $*"
+    else
+        "$@"
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Installation functions
+# ─────────────────────────────────────────────────────────────────────────────
+
+install_homebrew() {
+    if command_exists brew; then
+        log "Homebrew already installed"
+        return
+    fi
+
+    log "Installing Homebrew..."
+    if $DRY_RUN; then
+        log "(dry-run) Would install Homebrew"
+    else
+        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    fi
+}
+
+install_linux() {
+    log "Installing packages via apt..."
+    run sudo apt-get update
+    run sudo apt-get install -y --no-install-recommends "${DEPS_APT[@]}"
+
+    # Install extras via brew (lazygit, pyenv, etc.)
+    log "Installing extras via brew..."
+    install_homebrew
+    run brew install "${DEPS_BREW_EXTRAS[@]}"
+}
+
+install_macos() {
+    log "Installing packages via brew..."
+    install_homebrew
+    run brew install "${DEPS_BREW_BASE[@]}" "${DEPS_BREW_EXTRAS[@]}"
+}
+
+init_submodules() {
+    log "Initializing git submodules..."
+    local script_dir repo_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    repo_dir="$(dirname "$script_dir")"
+    run git -C "$repo_dir" submodule update --init --recursive
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────────────────────────────────────
+
+main() {
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        install_macos
+    elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        install_linux
+    else
+        err "Unsupported OS: $OSTYPE"
+    fi
+
+    init_submodules
+
+    log "Done! You may need to restart your shell."
+}
+
+main "$@"
