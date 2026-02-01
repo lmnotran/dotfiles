@@ -35,15 +35,32 @@ jobs:
       - name: Run ShellCheck on scripts
         run: |
           echo "Checking script/ directory..."
-          shellcheck script/* || true
+          # Only check bash/sh scripts (skip python, zsh-only scripts)
+          for f in script/*; do
+            # Skip non-files
+            [[ -f "$f" ]] || continue
+            
+            # Check shebang to determine if shellcheck supports it
+            shebang=$(head -1 "$f")
+            case "$shebang" in
+              *python*|*zsh*)
+                echo "Skipping $f (not a bash/sh script)"
+                continue
+                ;;
+            esac
+            
+            echo "Checking $f..."
+            shellcheck "$f"
+          done
 
+          echo ""
           echo "Checking chezmoi run scripts..."
           # Extract bash from .tmpl files for checking
           for f in chezmoi/run_*.sh.tmpl; do
             if [[ -f "$f" ]]; then
               echo "Checking $f..."
               # Remove chezmoi template directives for shellcheck
-              sed 's/{{.*}}/PLACEHOLDER/g' "$f" | shellcheck -s bash - || true
+              sed 's/{{.*}}/PLACEHOLDER/g' "$f" | shellcheck -s bash -
             fi
           done
 
