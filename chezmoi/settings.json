@@ -1,7 +1,6 @@
 {
   "files.associations": {
-    "*.sh.tmpl": "jinja-shell",
-    "*.tmpl": "gotmpl"
+    "*.sh.tmpl": "goshell"
   },
   "go.useLanguageServer": false,
   "gopls": {
