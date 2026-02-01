@@ -89,6 +89,7 @@ export VISUAL="$EDITOR"
 export GIT_EDITOR="$EDITOR"
 
 source $HOME/.config/zsh/git-overrides.zsh
+source $HOME/.config/zsh/aliases.zsh
 
 export GPG_TTY=$(tty)
 export ZSH_TMUX_UNICODE=true
