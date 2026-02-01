@@ -1,2 +1,10 @@
 {
+  "files.associations": {
+    "*.sh.tmpl": "jinja-shell",
+    "*.tmpl": "gotmpl"
+  },
+  "go.useLanguageServer": false,
+  "gopls": {
+    "ui.diagnostic.staticcheck": false
+  }
 }

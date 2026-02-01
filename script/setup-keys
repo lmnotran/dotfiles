@@ -67,7 +67,8 @@ ensure_logged_in() {
     esac
     
     if [ -z "${BW_SESSION:-}" ]; then
-        export BW_SESSION=$(bw unlock --raw)
+        BW_SESSION=$(bw unlock --raw)
+        export BW_SESSION
     fi
 }
 
@@ -121,7 +122,7 @@ setup_gpg_keys() {
     # Download to temp file
     local temp_gpg
     temp_gpg=$(mktemp)
-    trap "rm -f $temp_gpg" EXIT
+    trap 'rm -f "$temp_gpg"' EXIT
     
     info "Downloading GPG private key..."
     bw get attachment "$GPG_PRIVATE_KEY_FILENAME" --itemid "$item_id" --output "$temp_gpg"

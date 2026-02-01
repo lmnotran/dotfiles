@@ -1,4 +1,5 @@
 #!/bin/bash
+# vim: set ft=bash:
 #
 # chezmoi run_once script - Install dependencies
 # This runs once per machine (tracked by script hash)
@@ -16,6 +17,7 @@ if [[ -t 1 ]]; then
 else
     GREEN='' YELLOW='' CYAN='' RESET=''
 fi
+export GREEN YELLOW CYAN RESET
 
 log()  { echo -e "${CYAN}[install-deps]${RESET} $*"; }
 warn() { echo -e "${YELLOW}[install-deps]${RESET} $*"; }
