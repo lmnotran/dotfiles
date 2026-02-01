@@ -39,7 +39,7 @@ jobs:
           for f in script/*; do
             # Skip non-files
             [[ -f "$f" ]] || continue
-            
+
             # Check shebang to determine if shellcheck supports it
             shebang=$(head -1 "$f")
             case "$shebang" in
@@ -48,7 +48,7 @@ jobs:
                 continue
                 ;;
             esac
-            
+
             echo "Checking $f..."
             shellcheck "$f"
           done
@@ -187,10 +187,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Neovim
+      - name: Install Neovim (latest stable)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y neovim
+          # Ubuntu apt has old neovim - install latest stable from GitHub releases
+          curl -LO https://github.com/neovim/neovim/releases/download/stable/nvim-linux-x86_64.tar.gz
+          sudo tar -xzf nvim-linux-x86_64.tar.gz -C /opt
+          sudo ln -sf /opt/nvim-linux-x86_64/bin/nvim /usr/local/bin/nvim
+          nvim --version | head -1
 
       - name: Install chezmoi and apply dotfiles
         run: |
@@ -209,18 +212,22 @@ jobs:
 
       - name: Test neovim loads without errors
         run: |
-          # Run neovim in headless mode and check for errors
-          # The --headless flag runs without UI
-          # +qa quits immediately after loading
-          nvim --headless -c 'echo "Neovim loaded successfully"' -c 'qa' 2>&1 || {
-            echo "⚠ Neovim had warnings/errors (may be due to missing plugins)"
-            echo "This is expected in CI without full plugin installation"
-          }
+          # Run neovim in headless mode and capture output
+          output=$(nvim --headless -c 'echo "Neovim loaded successfully"' -c 'qa' 2>&1 | tail -50)
+          echo "$output"
+          
+          # Fail if there are Lua errors
+          if echo "$output" | grep -q "^E[0-9]\+:\|Error while calling lua"; then
+            echo ""
+            echo "❌ Neovim config has errors!"
+            exit 1
+          fi
+          echo "✓ Neovim config OK"
 
       - name: Check neovim health (basic)
         run: |
           # Run checkhealth in headless mode
-          timeout 30 nvim --headless -c 'checkhealth vim.health' -c 'qa' 2>&1 || true
+          timeout 30 nvim --headless -c 'checkhealth vim.health' -c 'qa' 2>&1 | tail -30 || true
 
   # ─────────────────────────────────────────────────────────────────────────
   # Test tmux configuration
