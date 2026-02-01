@@ -6,3 +6,9 @@
 *-cli-read.txt
 *-cli-send.txt
 .zsh_plugins.zsh
+
+# Sensitive files that should not be tracked
+docker/deluge/config/ssl/
+docker/deluge/config/auth
+*.pkey
+*.key
