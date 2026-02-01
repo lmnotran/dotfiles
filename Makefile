@@ -46,12 +46,12 @@ dry-run: _check
 .PHONY: nvim-setup
 nvim-setup:
 	@echo "Checking nvim plugin dependencies..."
-	@command -v rg >/dev/null 2>&1 || echo "Warning: ripgrep (rg) not found - needed for Snacks grep"
-	@command -v fd >/dev/null 2>&1 || echo "Warning: fd not found - needed for Snacks file picker"
-	@command -v lazygit >/dev/null 2>&1 || echo "Warning: lazygit not found - needed for Snacks lazygit"
+	@command -v rg >/dev/null 2>&1 || echo "Warning: ripgrep (rg) not found - run ./script/install-deps"
+	@command -v fd >/dev/null 2>&1 || echo "Warning: fd not found - run ./script/install-deps"
+	@command -v lazygit >/dev/null 2>&1 || echo "Warning: lazygit not found - run ./script/install-deps"
 	@command -v gcc >/dev/null 2>&1 || command -v clang >/dev/null 2>&1 || echo "Warning: C compiler not found - needed for treesitter"
-	@echo "Installing plugins via lazy.nvim..."
+	@echo "Installing nvim plugins via lazy.nvim..."
 	@nvim --headless "+Lazy! restore" +qa
-	@echo "Installing treesitter parsers (from ensure_installed)..."
+	@echo "Installing treesitter parsers..."
 	@nvim --headless "+TSUpdateSync" +qa
 	@echo "Done! Run 'nvim' to verify setup."
