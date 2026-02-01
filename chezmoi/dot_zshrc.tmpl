@@ -1,0 +1,102 @@
+# Managed by chezmoi
+# Machine: {{ .chezmoi.hostname }} | User: {{ .chezmoi.username }} | OS: {{ .chezmoi.os }}
+
+setopt EXTENDED_GLOB
+
+#===============================================================================
+# pyenv
+#===============================================================================
+export PYENV_ROOT="$HOME/.pyenv"
+command -v pyenv >/dev/null || export PATH="$PYENV_ROOT/bin:$PATH"
+command -v pyenv >/dev/null && eval "$(pyenv init -)"
+
+#===============================================================================
+# Machine-specific config (before plugins)
+#===============================================================================
+{{- if eq .chezmoi.hostname "bigboi" }}
+# bigboi-specific
+umask 002
+{{- end }}
+
+{{- if eq .chezmoi.hostname "bao.segfault.rip" }}
+# bao.segfault.rip - linuxbrew
+eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+{{- end }}
+
+{{- if or (eq .chezmoi.hostname "CPC-mason-3ROVK") (eq .chezmoi.hostname "usmastra@docker-desktop") }}
+# Linuxbrew
+eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+export PATH="$HOME/.local/bin:$PATH"
+{{- end }}
+
+{{- if eq .chezmoi.os "darwin" }}
+# macOS-specific
+test -e "${HOME}/.iterm2_shell_integration.zsh" && source "${HOME}/.iterm2_shell_integration.zsh" || true
+export PATH="/opt/homebrew/opt/grep/libexec/gnubin:$PATH"
+{{- end }}
+
+{{- if or (eq .chezmoi.hostname "lemon.whatbox.ca") (eq .chezmoi.hostname "usmastra@honeycrisp.local") }}
+# Custom brew prefix
+export BREW_PREFIX="${HOME}/repos/brew/"
+export PATH="${BREW_PREFIX}/bin:$PATH"
+eval "$("${BREW_PREFIX}"/bin/brew shellenv)"
+{{- end }}
+
+export PATH="$HOME/.local/bin:$PATH"
+export TERM="xterm-256color"
+
+#===============================================================================
+# oh-my-zsh configuration
+#===============================================================================
+COMPLETION_WAITING_DOTS="true"
+HIST_STAMPS="yyyy-mm-dd"
+
+#===============================================================================
+# antidote plugin manager
+#===============================================================================
+ANTIDOTE_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/antidote"
+if [[ -r "$ANTIDOTE_HOME/antidote.zsh" ]]; then
+  source "$ANTIDOTE_HOME/antidote.zsh"
+  antidote load
+elif [[ -r "$HOME/.antidote/antidote.zsh" ]]; then
+  source "$HOME/.antidote/antidote.zsh"
+  antidote load
+fi
+
+#===============================================================================
+# User configuration
+#===============================================================================
+# Preferred editor
+if [[ "$TERM_PROGRAM" == "vscode" || -n "$VSCODE_PID" || -n "$VSCODE_GIT_IPC_HANDLE" ]]; then
+  if command -v code >/dev/null 2>&1; then
+    export EDITOR="code --wait --reuse-window"
+  else
+    export EDITOR="nvim"
+  fi
+else
+  if command -v nvim >/dev/null 2>&1; then
+    export EDITOR="nvim"
+  else
+    export EDITOR="vi"
+  fi
+fi
+export VISUAL="$EDITOR"
+export GIT_EDITOR="$EDITOR"
+
+# Source additional zsh configs
+[[ -r "$HOME/.config/zsh/git-overrides.zsh" ]] && source "$HOME/.config/zsh/git-overrides.zsh"
+[[ -r "$HOME/.config/zsh/aliases.zsh" ]] && source "$HOME/.config/zsh/aliases.zsh"
+
+export GPG_TTY=$(tty)
+export ZSH_TMUX_UNICODE=true
+export GO111MODULE=on
+
+{{- if hasPrefix "usmastra" .chezmoi.username }}
+#===============================================================================
+# Work (lego) config
+#===============================================================================
+[[ -r "$HOME/.config/zsh/lego.zsh" ]] && source "$HOME/.config/zsh/lego.zsh"
+{{- end }}
+
+# Optional: local overrides outside of git
+[[ -r "$HOME/.zshrc.local" ]] && source "$HOME/.zshrc.local"

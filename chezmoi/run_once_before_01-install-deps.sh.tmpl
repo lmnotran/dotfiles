@@ -1,0 +1,135 @@
+#!/bin/bash
+#
+# chezmoi run_once script - Install dependencies
+# This runs once per machine (tracked by script hash)
+#
+set -euo pipefail
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Colors
+# ─────────────────────────────────────────────────────────────────────────────
+if [[ -t 1 ]]; then
+    GREEN='\033[0;32m'
+    YELLOW='\033[0;33m'
+    CYAN='\033[0;36m'
+    RESET='\033[0m'
+else
+    GREEN='' YELLOW='' CYAN='' RESET=''
+fi
+
+log()  { echo -e "${CYAN}[install-deps]${RESET} $*"; }
+warn() { echo -e "${YELLOW}[install-deps]${RESET} $*"; }
+
+command_exists() { command -v "$1" &>/dev/null; }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Homebrew
+# ─────────────────────────────────────────────────────────────────────────────
+install_homebrew() {
+    if command_exists brew; then
+        log "Homebrew already installed"
+        return
+    fi
+    log "Installing Homebrew..."
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+}
+
+{{ if eq .chezmoi.os "linux" -}}
+# ─────────────────────────────────────────────────────────────────────────────
+# Linux: apt + brew for extras
+# ─────────────────────────────────────────────────────────────────────────────
+log "Installing packages via apt..."
+sudo apt-get update
+sudo apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    coreutils \
+    curl \
+    fd-find \
+    fzf \
+    git \
+    git-lfs \
+    htop \
+    jq \
+    make \
+    neovim \
+    ninja-build \
+    ripgrep \
+    stow \
+    sudo \
+    tmux \
+    unzip \
+    wget \
+    zsh
+
+log "Installing extras via brew (lazygit, pyenv, bws)..."
+install_homebrew
+
+# Ensure brew is in PATH for this script
+eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv 2>/dev/null || true)"
+
+brew install lazygit pyenv bitwarden-cli || warn "Some brew packages failed"
+
+{{ else if eq .chezmoi.os "darwin" -}}
+# ─────────────────────────────────────────────────────────────────────────────
+# macOS: brew for everything
+# ─────────────────────────────────────────────────────────────────────────────
+log "Installing packages via brew..."
+install_homebrew
+
+brew install \
+    coreutils \
+    curl \
+    fd \
+    fzf \
+    git \
+    git-lfs \
+    grep \
+    htop \
+    jq \
+    lazygit \
+    make \
+    neovim \
+    pyenv \
+    ripgrep \
+    stow \
+    tmux \
+    wget \
+    zsh \
+    bitwarden-cli
+
+{{ end -}}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Antidote (zsh plugin manager)
+# ─────────────────────────────────────────────────────────────────────────────
+ANTIDOTE_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/antidote"
+if [[ ! -d "$ANTIDOTE_HOME" ]]; then
+    log "Installing antidote..."
+    git clone --depth=1 https://github.com/mattmc3/antidote.git "$ANTIDOTE_HOME"
+else
+    log "Antidote already installed"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# gpakosz/.tmux (tmux configuration framework)
+# ─────────────────────────────────────────────────────────────────────────────
+TMUX_HOME="$HOME/.tmux"
+if [[ ! -d "$TMUX_HOME" ]]; then
+    log "Installing gpakosz/.tmux..."
+    git clone --depth=1 https://github.com/gpakosz/.tmux.git "$TMUX_HOME"
+else
+    log "gpakosz/.tmux already installed"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Set zsh as default shell
+# ─────────────────────────────────────────────────────────────────────────────
+if [[ "$SHELL" != *"zsh"* ]]; then
+    log "Setting zsh as default shell..."
+    chsh -s "$(which zsh)" || warn "Failed to change shell (may need sudo)"
+else
+    log "zsh is already the default shell"
+fi
+
+log "✓ Dependencies installed!"
