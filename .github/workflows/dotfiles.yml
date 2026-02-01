@@ -166,16 +166,22 @@ jobs:
       - name: Test zsh interactive startup
         shell: zsh {0}
         run: |
-          # Source zshrc in a subshell to catch startup errors
-          # Skip plugin loading for faster test
-          export SKIP_ANTIDOTE=1
+          # Source zshrc and check for errors
+          # Note: antidote is installed so plugins will load
+          set +e
+          output=$(source ~/.zshrc 2>&1)
+          exit_code=$?
+          set -e
 
-          # Basic sanity checks
+          if [[ $exit_code -ne 0 ]] || echo "$output" | grep -qiE "error|command not found"; then
+            echo "$output"
+            echo "❌ zshrc has errors!"
+            exit 1
+          fi
+
           echo "SHELL=$SHELL"
           echo "ZSH_VERSION=$ZSH_VERSION"
-
-          # Test that important env vars would be set
-          [[ -n "$ZSH_VERSION" ]] && echo "✓ Running zsh"
+          echo "✓ zshrc loaded successfully"
 
   # ─────────────────────────────────────────────────────────────────────────
   # Test neovim configuration
@@ -215,7 +221,7 @@ jobs:
           # Run neovim in headless mode and capture output
           output=$(nvim --headless -c 'echo "Neovim loaded successfully"' -c 'qa' 2>&1 | tail -80)
           echo "$output"
-          
+
           # Fail if there are Lua/config errors
           if echo "$output" | grep -qiE "^E[0-9]+:|Error while calling lua|Failed to run|module .* not found"; then
             echo ""
@@ -227,7 +233,9 @@ jobs:
       - name: Check neovim health (basic)
         run: |
           # Run checkhealth in headless mode
-          timeout 30 nvim --headless -c 'checkhealth vim.health' -c 'qa' 2>&1 | tail -30 || true
+          # This is informational only - don't fail on health warnings
+          timeout 30 nvim --headless -c 'checkhealth vim.health' -c 'qa' 2>&1 | tail -30
+          echo "✓ Health check complete (informational)"
 
   # ─────────────────────────────────────────────────────────────────────────
   # Test tmux configuration
