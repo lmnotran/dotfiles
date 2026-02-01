@@ -213,11 +213,11 @@ jobs:
       - name: Test neovim loads without errors
         run: |
           # Run neovim in headless mode and capture output
-          output=$(nvim --headless -c 'echo "Neovim loaded successfully"' -c 'qa' 2>&1 | tail -50)
+          output=$(nvim --headless -c 'echo "Neovim loaded successfully"' -c 'qa' 2>&1 | tail -80)
           echo "$output"
           
-          # Fail if there are Lua errors
-          if echo "$output" | grep -q "^E[0-9]\+:\|Error while calling lua"; then
+          # Fail if there are Lua/config errors
+          if echo "$output" | grep -qiE "^E[0-9]+:|Error while calling lua|Failed to run|module .* not found"; then
             echo ""
             echo "❌ Neovim config has errors!"
             exit 1

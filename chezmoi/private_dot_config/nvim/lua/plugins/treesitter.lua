@@ -6,7 +6,13 @@ return {
       ensure_installed = { "c", "cpp", "lua", "vim", "vimdoc", "query", "markdown", "markdown_inline" },
     },
     config = function(_, opts)
-      require("nvim-treesitter.configs").setup(opts)
+      -- nvim-treesitter main branch removed configs module
+      -- Use pcall for backwards compatibility
+      local ok, configs = pcall(require, "nvim-treesitter.configs")
+      if ok then
+        configs.setup(opts)
+      end
+
       -- State tracking for async parser loading
       local parsers_loaded = {}
       local parsers_pending = {}
