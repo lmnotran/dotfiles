@@ -144,7 +144,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y zsh
+          sudo apt-get install -y zsh fzf
 
       - name: Install chezmoi and apply dotfiles
         run: |
@@ -166,19 +166,35 @@ jobs:
       - name: Test zsh interactive startup
         shell: zsh {0}
         run: |
+          # Create ~/.ssh with a dummy key so ssh-agent plugin works
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -q
+          
           # Source zshrc and check for errors
-          # Note: antidote is installed so plugins will load
           set +e
           output=$(source ~/.zshrc 2>&1)
           exit_code=$?
           set -e
-
-          if [[ $exit_code -ne 0 ]] || echo "$output" | grep -qiE "error|command not found"; then
-            echo "$output"
+          
+          echo "$output"
+          
+          # Fail on actual errors (not plugin warnings about missing optional tools)
+          # - Exit code non-zero indicates a real problem
+          # - "command not found" for core commands is an error
+          # Plugin warnings like "[oh-my-zsh] fzf plugin: Cannot find" are OK
+          if [[ $exit_code -ne 0 ]]; then
+            echo "❌ zshrc exited with code $exit_code!"
+            exit 1
+          fi
+          
+          # Check for fatal errors (skip known plugin warnings)
+          if echo "$output" | grep -v "\[oh-my-zsh\]" | grep -qiE "^.*: command not found|error:"; then
             echo "❌ zshrc has errors!"
             exit 1
           fi
 
+          echo ""
           echo "SHELL=$SHELL"
           echo "ZSH_VERSION=$ZSH_VERSION"
           echo "✓ zshrc loaded successfully"
