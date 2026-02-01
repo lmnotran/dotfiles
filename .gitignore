@@ -12,3 +12,4 @@ docker/deluge/config/ssl/
 docker/deluge/config/auth
 *.pkey
 *.key
+bin/

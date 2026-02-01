@@ -1,15 +1,18 @@
 # Dotfiles
 
-Personal dotfiles managed with [GNU Stow](https://www.gnu.org/software/stow/).
+Personal dotfiles managed with [chezmoi](https://www.chezmoi.io/).
 
 ## Quick Setup (New Machine)
 
-```bash
-# Clone the repo
-git clone https://github.com/YOUR_USERNAME/dotfiles.git ~/repos/dotfiles
-cd ~/repos/dotfiles
+**One-liner** (installs chezmoi, clones repo, applies dotfiles):
 
-# Run setup (installs deps, stows configs, sets zsh as default shell)
+```bash
+sh -c "$(curl -fsLS get.chezmoi.io)" -- init --apply lmnotran/dotfiles
+```
+
+Or if you already have the repo cloned:
+
+```bash
 ./script/setup
 ```
 
@@ -17,53 +20,105 @@ That's it! Restart your terminal and you're good to go.
 
 ## What Gets Installed
 
-### Packages (via apt on Linux, brew on macOS)
-- `zsh`, `git`, `stow`, `fzf`, `htop`, `curl`, `wget`, `make`
-- `lazygit`, `pyenv` (via brew on all platforms)
+The `run_once_before_01-install-deps.sh` script automatically installs:
 
-### Stowed Configs
-| Package | What it configures |
-|---------|-------------------|
-| `zsh`   | `.zshrc`, zsh plugins (antidote) |
-| `bin`   | Personal scripts in `~/bin` |
-| `git`   | `.gitconfig` |
-| `nvim`  | Neovim config |
-| `tmux`  | `.tmux.conf` (sources gpakosz/.tmux submodule) |
+### Packages
+- **Linux (apt):** `zsh`, `git`, `neovim`, `fzf`, `ripgrep`, `fd-find`, `tmux`, `htop`, `curl`, `wget`, `make`
+- **Linux (brew):** `lazygit`, `pyenv`, `bitwarden-cli`
+- **macOS (brew):** All of the above
 
-## Manual Commands
+### Tools (cloned on-demand)
+- [antidote](https://github.com/mattmc3/antidote) — zsh plugin manager → `~/.local/share/antidote`
+- [gpakosz/.tmux](https://github.com/gpakosz/.tmux) — tmux config framework → `~/.tmux`
+
+### Managed Dotfiles
+| File | Description |
+|------|-------------|
+| `~/.zshrc` | Zsh config (templated per-machine) |
+| `~/.zsh_plugins.txt` | Antidote plugin list |
+| `~/.config/zsh/` | Aliases, git overrides |
+| `~/.config/nvim/` | Neovim config |
+| `~/.gitconfig` | Git config |
+| `~/.tmux.conf` | Tmux config (sources gpakosz/.tmux) |
+| `~/.tmux.conf.local` | Tmux customizations |
+| `~/.profile` | Pyenv for bash shells |
+| `~/.spaceshiprc.zsh` | Spaceship prompt config |
+
+## Common Commands
 
 ```bash
-# Preview what setup would do
-./script/setup --dry-run
-
-# Just install dependencies
-./script/install-deps
-
-# Just stow configs
-make stow PACKAGES="zsh bin git nvim tmux"
-
-# Unstow (remove symlinks)
-make unstow PACKAGES="zsh"
-
-# See all make targets
-make help
+chezmoi diff              # Preview pending changes
+chezmoi apply             # Apply changes
+chezmoi edit ~/.zshrc     # Edit a managed file
+chezmoi cd                # Jump to source directory
+chezmoi update            # Pull latest and apply
 ```
 
-## Adding New Configs
+## Adding New Dotfiles
 
-1. Create a folder under `stow/` (e.g., `stow/tmux/`)
-2. Mirror the home directory structure inside it:
-   ```
-   stow/tmux/.tmux.conf        → ~/.tmux.conf
-   stow/tmux/.config/tmux/...  → ~/.config/tmux/...
-   ```
-3. Add the package name to `PACKAGES` in `script/setup`
-4. Run `make stow PACKAGES="tmux"`
+```bash
+chezmoi add ~/.some-config    # Add a file to chezmoi
+chezmoi edit ~/.some-config   # Edit and apply
+```
+
+Files are stored in `chezmoi/` with special naming:
+- `dot_` prefix → `.` (e.g., `dot_zshrc` → `.zshrc`)
+- `.tmpl` suffix → Go template (for machine-specific config)
+- `private_` prefix → 0600 permissions
 
 ## Machine-Specific Config
 
-Machine-specific zsh configs live in `machine-specific-config/<hostname>/`:
-- `before-omz.zshrc` - Sourced before plugins
-- `after-omz.zshrc` - Sourced after plugins
+Machine-specific settings are handled via Go templates in `dot_zshrc.tmpl`:
 
-These are automatically loaded based on `$HOST`.
+```bash
+{{- if eq .chezmoi.hostname "bigboi" }}
+umask 002
+{{- end }}
+
+{{- if eq .chezmoi.os "darwin" }}
+# macOS-specific
+{{- end }}
+```
+
+Available variables: `.chezmoi.hostname`, `.chezmoi.os`, `.chezmoi.username`
+
+## Secrets Management
+
+Secrets are managed separately from dotfiles using [Bitwarden Secrets Manager](https://bitwarden.com/products/secrets-manager/).
+
+### Runtime Secrets (for Docker)
+
+Docker compose files use `${VAR:?must be set}` pattern. Load secrets before running containers:
+
+```bash
+# Load secrets for a profile
+secrets docker        # cloudflare, paperless, pihole, mariadb
+secrets lego          # GHCR_TOKEN, GITHUB_TOKEN
+secrets all           # everything
+
+# Then run your containers
+docker compose up -d
+```
+
+Available profiles: `cloudflare`, `paperless`, `pihole`, `mariadb`, `aviationstack`, `lego`, `docker`, `all`
+
+### SSH/GPG Keys (one-time setup)
+
+```bash
+./script/setup-keys
+```
+
+Downloads SSH and GPG keys from Bitwarden vault attachments.
+
+### How It Works
+
+1. **BWS_ACCESS_TOKEN** — Stored in Bitwarden vault, fetched on first `secrets` call
+2. **Secret UUIDs** — Stored in `script/load-secrets` (safe to commit)
+3. **Actual secrets** — Fetched at runtime via `bws`, never stored locally
+
+## Other Scripts
+
+| Script | Description |
+|--------|-------------|
+| `script/setup-keys` | Download SSH/GPG keys from Bitwarden |
+| `script/load-secrets` | Load secrets from Bitwarden Secrets Manager |
