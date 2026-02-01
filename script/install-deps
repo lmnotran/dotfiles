@@ -23,14 +23,19 @@ DEPS_APT=(
     cmake
     coreutils
     curl
+    fd-find
     fzf
     git
     git-lfs
     htop
+    jq
     make
+    neovim
     ninja-build
+    ripgrep
     stow
     sudo
+    tmux
     unzip
     wget
     zsh
@@ -38,6 +43,7 @@ DEPS_APT=(
 
 # Packages only available via brew (used on Linux for extras, macOS adds these too)
 DEPS_BREW_EXTRAS=(
+    bitwarden-cli
     lazygit
     pyenv
 )
@@ -46,14 +52,19 @@ DEPS_BREW_EXTRAS=(
 DEPS_BREW_BASE=(
     coreutils
     curl
+    fd
     fzf
     git
     git-lfs
     grep
     htop
+    jq
     make
+    neovim
     openjdk@11
+    ripgrep
     stow
+    tmux
     wget
     zsh
 )

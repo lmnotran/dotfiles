@@ -31,8 +31,9 @@ import airportsdata
 import sys
 from urllib.parse import urlencode
 from docopt import docopt
+import os
 
-aviationstack_api_key = "***REDACTED_AVIATIONSTACK_KEY***"
+aviationstack_api_key = os.environ.get("AVIATIONSTACK_API_KEY", "")
 
 def get_tzone_info(airport_code: str) -> ZoneInfo:
     '''

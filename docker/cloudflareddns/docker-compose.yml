@@ -14,11 +14,11 @@ services:
       - LOG_LEVEL=3
       - CF_USER=mason@Lmnotran.com
       # The API key is account-wide
-      - CF_APIKEY=***REDACTED_CF_APIKEY***
+      - CF_APIKEY=${CF_APIKEY:?CF_APIKEY must be set}
       # This token is specific to bao.segfault.rip
-      - CF_APITOKEN=***REDACTED_CF_APITOKEN***
+      - CF_APITOKEN=${CF_APITOKEN:?CF_APITOKEN must be set}
       # This token works from any host
-      - CF_APITOKEN_ZONE=***REDACTED_CF_ZONE_TOKEN***
+      - CF_APITOKEN_ZONE=${CF_APITOKEN_ZONE:?CF_APITOKEN_ZONE must be set}
       - CF_HOSTS=bao.segfault.rip
       - CF_ZONES=segfault.rip
       - CF_RECORDTYPES=A;

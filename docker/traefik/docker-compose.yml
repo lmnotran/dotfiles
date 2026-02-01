@@ -32,9 +32,9 @@ services:
       - --accesslog.filepath=/var/log/traefik/access.log
     environment:
       - CF_API_EMAIL=mason@Lmnotran.com
-      - CF_API_KEY=***REDACTED_CF_APIKEY***
-      - CF_DNS_API_TOKEN=***REDACTED_CF_APITOKEN***
-      - CF_ZONE_API_TOKEN=***REDACTED_CF_ZONE_TOKEN***
+      - CF_API_KEY=${CF_API_KEY:?CF_API_KEY must be set}
+      - CF_DNS_API_TOKEN=${CF_DNS_API_TOKEN:?CF_DNS_API_TOKEN must be set}
+      - CF_ZONE_API_TOKEN=${CF_ZONE_API_TOKEN:?CF_ZONE_API_TOKEN must be set}
     networks:
       - traefik-proxy
     ports:

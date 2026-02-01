@@ -1,2 +1,4 @@
 #!/bin/bash
-export GHCR_TOKEN="REDACTED_GHCR_TOKEN"
+
+# Tokens loaded from Bitwarden or environment
+export GHCR_TOKEN="${GHCR_TOKEN:-}"
