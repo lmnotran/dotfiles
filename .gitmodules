@@ -1,6 +1,0 @@
-[submodule ".tmux"]
-	path = .tmux
-	url = git@github.com:gpakosz/.tmux.git
-[submodule ".antidote"]
-	path = .antidote
-	url = https://github.com/mattmc3/antidote.git
