@@ -119,7 +119,9 @@ install_homebrew() {
     if $DRY_RUN; then
         log "(dry-run) Would install Homebrew"
     else
-        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+        NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+        # Add brew to PATH for this session
+        eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
     fi
 }
 
@@ -138,6 +140,39 @@ install_macos() {
     log "Installing packages via brew..."
     install_homebrew
     run brew install "${DEPS_BREW_BASE[@]}" "${DEPS_BREW_EXTRAS[@]}"
+}
+
+install_antidote() {
+    local antidote_home="${XDG_DATA_HOME:-$HOME/.local/share}/antidote"
+    if [[ -d "$antidote_home" ]]; then
+        log "Antidote already installed"
+        return
+    fi
+    log "Installing antidote (zsh plugin manager)..."
+    run git clone --depth=1 https://github.com/mattmc3/antidote.git "$antidote_home"
+}
+
+install_tmux_framework() {
+    local tmux_home="$HOME/.tmux"
+    if [[ -d "$tmux_home" ]]; then
+        log "gpakosz/.tmux already installed"
+        return
+    fi
+    log "Installing gpakosz/.tmux..."
+    run git clone --depth=1 https://github.com/gpakosz/.tmux.git "$tmux_home"
+}
+
+set_default_shell() {
+    if [[ "$SHELL" == *"zsh"* ]]; then
+        log "zsh is already the default shell"
+        return
+    fi
+    log "Setting zsh as default shell..."
+    if $DRY_RUN; then
+        log "(dry-run) Would run: chsh -s $(which zsh)"
+    else
+        chsh -s "$(which zsh)" || warn "Failed to change shell (may need sudo)"
+    fi
 }
 
 init_submodules() {
@@ -161,9 +196,11 @@ main() {
         err "Unsupported OS: $OSTYPE"
     fi
 
-    init_submodules
+    install_antidote
+    install_tmux_framework
+    set_default_shell
 
-    log "Done! You may need to restart your shell."
+    log "${GREEN}✓${RESET} Dependencies installed!"
 }
 
 main "$@"
