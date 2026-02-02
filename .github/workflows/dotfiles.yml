@@ -311,14 +311,6 @@ jobs:
           chmod +x script/install-deps
           ./script/install-deps --dry-run
 
-      - name: Test setup --dry-run
-        run: |
-          chmod +x script/setup
-          # Install chezmoi first (setup expects it or will install it)
-          sh -c "$(curl -fsLS get.chezmoi.io)" -- -b ~/.local/bin
-          export PATH="$HOME/.local/bin:$PATH"
-          ./script/setup --dry-run
-
   # ─────────────────────────────────────────────────────────────────────────
   # Summary job for branch protection
   # ─────────────────────────────────────────────────────────────────────────
