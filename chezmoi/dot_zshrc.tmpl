@@ -19,19 +19,22 @@ command -v pyenv >/dev/null && eval "$(pyenv init -)"
 umask 002
 {{- end }}
 
-{{- if eq .chezmoi.hostname "bao.segfault.rip" }}
-# bao.segfault.rip - linuxbrew
-eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-{{- end }}
-
-{{- if or (eq .chezmoi.hostname "CPC-mason-3ROVK") (eq .chezmoi.hostname "usmastra@docker-desktop") }}
-# Linuxbrew
-eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-export PATH="$HOME/.local/bin:$PATH"
+{{- if eq .chezmoi.os "linux" }}
+# Linuxbrew - check common install locations
+if [[ -d /home/linuxbrew/.linuxbrew ]]; then
+  eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+elif [[ -d ~/.linuxbrew ]]; then
+  eval "$(~/.linuxbrew/bin/brew shellenv)"
+fi
 {{- end }}
 
 {{- if eq .chezmoi.os "darwin" }}
-# macOS-specific
+# macOS Homebrew
+if [[ -d /opt/homebrew ]]; then
+  eval "$(/opt/homebrew/bin/brew shellenv)"
+elif [[ -d /usr/local/Homebrew ]]; then
+  eval "$(/usr/local/bin/brew shellenv)"
+fi
 test -e "${HOME}/.iterm2_shell_integration.zsh" && source "${HOME}/.iterm2_shell_integration.zsh" || true
 export PATH="/opt/homebrew/opt/grep/libexec/gnubin:$PATH"
 {{- end }}
