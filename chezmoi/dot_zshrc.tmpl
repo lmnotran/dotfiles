@@ -88,8 +88,9 @@ export VISUAL="$EDITOR"
 export GIT_EDITOR="$EDITOR"
 
 # Source additional zsh configs
-[[ -r "$HOME/.config/zsh/git-overrides.zsh" ]] && source "$HOME/.config/zsh/git-overrides.zsh"
-[[ -r "$HOME/.config/zsh/aliases.zsh" ]] && source "$HOME/.config/zsh/aliases.zsh"
+source_if_exists() { [[ -r "$1" ]] && source "$1" || true; }
+source_if_exists "$HOME/.config/zsh/git-overrides.zsh"
+source_if_exists "$HOME/.config/zsh/aliases.zsh"
 
 export GPG_TTY=$(tty)
 export ZSH_TMUX_UNICODE=true
@@ -99,8 +100,8 @@ export GO111MODULE=on
 #===============================================================================
 # Work (work) config
 #===============================================================================
-[[ -r "$HOME/.config/zsh/work.zsh" ]] && source "$HOME/.config/zsh/work.zsh"
+source_if_exists "$HOME/.config/zsh/work.zsh"
 {{- end }}
 
 # Optional: local overrides outside of git
-[[ -r "$HOME/.zshrc.local" ]] && source "$HOME/.zshrc.local"
+source_if_exists "$HOME/.zshrc.local"
