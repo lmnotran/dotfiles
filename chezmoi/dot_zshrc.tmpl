@@ -68,6 +68,19 @@ elif [[ -r "$HOME/.antidote/antidote.zsh" ]]; then
 fi
 
 #===============================================================================
+# fzf integration (native, replaces omz plugin)
+#===============================================================================
+if command -v fzf >/dev/null 2>&1; then
+  # fzf 0.48+ supports --zsh, older versions need manual sourcing
+  eval "$(fzf --zsh 2>/dev/null)" || {
+    for dir in /usr/share/fzf "${HOMEBREW_PREFIX:-/opt/homebrew}/opt/fzf/shell"; do
+      [[ -f "$dir/key-bindings.zsh" ]] && source "$dir/key-bindings.zsh"
+      [[ -f "$dir/completion.zsh" ]] && source "$dir/completion.zsh"
+    done
+  }
+fi
+
+#===============================================================================
 # User configuration
 #===============================================================================
 # Preferred editor
