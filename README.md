@@ -13,7 +13,7 @@ sh -c "$(curl -fsLS get.chezmoi.io)" -- init --apply lmnotran/dotfiles
 Or if you already have the repo cloned:
 
 ```bash
-./script/setup
+./script/bootstrap
 ```
 
 That's it! Restart your terminal and you're good to go.

@@ -21,10 +21,11 @@ Context and rules for AI assistants working on this repository.
 - `script/` — Setup and utility scripts
 - `docker/` — Docker compose configs for self-hosted services (not dotfiles)
 
-### Chezmoi Migration (WIP)
-- `chezmoi/` — Experimental chezmoi migration on `feature/chezmoi-migration` branch
+### Chezmoi Setup
+- `chezmoi/` — Dotfiles source directory (specified via `.chezmoiroot`)
 - Uses Go templates for machine-specific config (`{{ .chezmoi.hostname }}`, etc.)
-- `run_once_before_*` scripts for dependency installation
+- `run_once_before_*` scripts delegate to `script/install-deps`
+- One-liner setup: `sh -c "$(curl -fsLS get.chezmoi.io)" -- init --apply lmnotran/dotfiles`
 
 ## Secrets Management
 
@@ -50,15 +51,15 @@ Context and rules for AI assistants working on this repository.
 ## Common Tasks
 
 ```bash
-# Stow dotfiles
-make stow
-
-# Preview stow changes
-make dry-run
-
-# Setup new machine (current)
-./script/setup
-
-# Setup new machine (chezmoi - WIP)
+# Setup new machine (one-liner)
 sh -c "$(curl -fsLS get.chezmoi.io)" -- init --apply lmnotran/dotfiles
+
+# Update dotfiles
+chezmoi update
+
+# Preview changes
+chezmoi diff
+
+# Re-run install-deps manually
+./script/install-deps
 ```

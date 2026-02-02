@@ -1,12 +1,11 @@
 #!/bin/bash
 #
-# setup - One-command setup for a new machine using chezmoi
+# bootstrap - Bootstrap dotfiles via chezmoi
 #
-# Usage: ./script/setup [--dry-run]
+# Usage: ./script/bootstrap
 #
-# This script:
-#   1. Installs chezmoi
-#   2. Applies dotfiles via chezmoi (which runs install-deps automatically)
+# This script is the entry point for VS Code devcontainer dotfiles installation.
+# It installs chezmoi if needed, then runs chezmoi init --apply.
 #
 # For a fresh machine without this repo cloned, use:
 #   sh -c "$(curl -fsLS get.chezmoi.io)" -- init --apply lmnotran/dotfiles
@@ -15,9 +14,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
-
-DRY_RUN=false
-[[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Colors
@@ -35,58 +31,54 @@ else
     GREEN='' YELLOW='' BLUE='' MAGENTA='' CYAN='' BOLD='' RESET=''
 fi
 
-log()      { echo -e "${CYAN}[setup]${RESET} $*"; }
+# ─────────────────────────────────────────────────────────────────────────────
+# Helper functions
+# ─────────────────────────────────────────────────────────────────────────────
+
+log()      { echo -e "${CYAN}[bootstrap]${RESET} $*"; }
 log_step() { echo -e "${BOLD}${BLUE}==>${RESET} ${BOLD}$*${RESET}"; }
 log_ok()   { echo -e "${GREEN}✓${RESET} $*"; }
 log_warn() { echo -e "${YELLOW}⚠${RESET} $*"; }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────────────────────────────────────
 
 main() {
     cd "$REPO_DIR"
 
     echo ""
     echo -e "${BOLD}${MAGENTA}  ┌─────────────────────────────────────┐${RESET}"
-    echo -e "${BOLD}${MAGENTA}  │       ${CYAN}Dotfiles Setup${MAGENTA}                │${RESET}"
+    echo -e "${BOLD}${MAGENTA}  │       ${CYAN}Dotfiles Bootstrap${MAGENTA}            │${RESET}"
     echo -e "${BOLD}${MAGENTA}  └─────────────────────────────────────┘${RESET}"
+    echo ""
+
+    log "Source: $REPO_DIR"
     echo ""
 
     log_step "Step 1/2: Installing chezmoi"
     if command -v chezmoi &>/dev/null; then
         log_ok "chezmoi already installed"
     else
-        if $DRY_RUN; then
-            log "(dry-run) Would install chezmoi to ~/.local/bin"
-        else
-            # Remove broken symlink if it exists (leftover from stow)
-            [[ -L ~/.local/bin ]] && rm ~/.local/bin
-            mkdir -p ~/.local/bin
-            sh -c "$(curl -fsLS get.chezmoi.io)" -- -b ~/.local/bin
-            export PATH="$HOME/.local/bin:$PATH"
-        fi
-        log_ok "chezmoi installed"
+        # Remove broken symlink if it exists (leftover from stow)
+        [[ -L ~/.local/bin ]] && rm ~/.local/bin
+        mkdir -p ~/.local/bin
+        sh -c "$(curl -fsLS get.chezmoi.io)" -- -b ~/.local/bin
+        export PATH="$HOME/.local/bin:$PATH"
+        log_ok "chezmoi installed to ~/.local/bin"
     fi
     echo ""
 
     log_step "Step 2/2: Applying dotfiles"
-    if $DRY_RUN; then
-        log "(dry-run) Would run: chezmoi init --source $REPO_DIR/chezmoi --apply"
-        chezmoi diff --source "$REPO_DIR/chezmoi" 2>/dev/null || true
-    else
-        chezmoi init --source "$REPO_DIR/chezmoi" --apply
-    fi
+    chezmoi init --source "$REPO_DIR" --apply
     log_ok "Dotfiles applied"
     echo ""
 
-    echo -e "${BOLD}${GREEN}✓ Setup complete!${RESET}"
+    echo -e "${BOLD}${GREEN}✓ Bootstrap complete!${RESET}"
     echo ""
     echo -e "${BOLD}Next steps:${RESET}"
     echo -e "  ${CYAN}1.${RESET} Restart your terminal (or run: ${YELLOW}exec zsh${RESET})"
     echo -e "  ${CYAN}2.${RESET} Antidote will auto-install zsh plugins on first launch"
-    echo ""
-    echo -e "${BOLD}Useful commands:${RESET}"
-    echo -e "  ${YELLOW}chezmoi diff${RESET}     # See pending changes"
-    echo -e "  ${YELLOW}chezmoi apply${RESET}    # Apply changes"
-    echo -e "  ${YELLOW}chezmoi edit${RESET}     # Edit managed files"
-    echo -e "  ${YELLOW}chezmoi cd${RESET}       # Jump to source directory"
     echo ""
 }
 
