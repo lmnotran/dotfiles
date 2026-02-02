@@ -122,3 +122,17 @@ Downloads SSH and GPG keys from Bitwarden vault attachments.
 |--------|-------------|
 | `script/setup-keys` | Download SSH/GPG keys from Bitwarden |
 | `script/load-secrets` | Load secrets from Bitwarden Secrets Manager |
+
+## Devcontainer Setup
+
+To automatically apply dotfiles when opening any VS Code devcontainer, add to your VS Code `settings.json`:
+
+```json
+...
+  "dotfiles.repository": "lmnotran/dotfiles",
+  "dotfiles.targetPath": "~/repos/dotfiles",
+  "dotfiles.installCommand": "sh -c \"$(curl -fsLS get.chezmoi.io)\" -- init --source ~/repos/dotfiles --apply",
+...
+```
+
+This uses VS Code's built-in dotfiles support — it clones the repo once, then chezmoi uses that clone directly.

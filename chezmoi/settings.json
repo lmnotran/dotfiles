@@ -1,9 +1,0 @@
-{
-  "files.associations": {
-    "*.sh.tmpl": "goshell"
-  },
-  "go.useLanguageServer": false,
-  "gopls": {
-    "ui.diagnostic.staticcheck": false
-  }
-}
