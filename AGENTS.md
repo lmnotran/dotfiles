@@ -11,6 +11,7 @@ Context and rules for AI assistants working on this repository.
   - `git filter-repo` / `git filter-branch`
   - Any history-rewriting operations
 - **NEVER commit secrets** — Use environment variables or Bitwarden Secrets Manager
+- **Prefer amending commits** — When fixing something related to the previous commit, use `git commit --amend` to keep history clean rather than creating fixup commits. Logically independent changes should always be separate commits.
 
 ## Repository Structure
 
