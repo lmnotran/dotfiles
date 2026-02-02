@@ -170,15 +170,15 @@ jobs:
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
           ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N "" -q
-          
+
           # Source zshrc and check for errors
           set +e
           output=$(source ~/.zshrc 2>&1)
           exit_code=$?
           set -e
-          
+
           echo "$output"
-          
+
           # Fail on actual errors (not plugin warnings about missing optional tools)
           # - Exit code non-zero indicates a real problem
           # - "command not found" for core commands is an error
@@ -187,7 +187,7 @@ jobs:
             echo "❌ zshrc exited with code $exit_code!"
             exit 1
           fi
-          
+
           # Check for fatal errors (skip known plugin warnings)
           if echo "$output" | grep -v "\[oh-my-zsh\]" | grep -qiE "^.*: command not found|error:"; then
             echo "❌ zshrc has errors!"
