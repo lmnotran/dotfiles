@@ -41,6 +41,12 @@ Context and rules for AI assistants working on this repository.
 - Shell: zsh with antidote plugin manager
 - Editor: neovim (or VS Code in VS Code terminal)
 
+### Maintenance Philosophy
+- **Minimize maintenance overhead** — This is a personal dotfiles repo, not production infrastructure
+- **Avoid version pinning** — Use latest stable versions of tools (chezmoi, neovim, etc.) rather than pinning specific versions
+- **No Dependabot/Renovate** — Not worth the noise for a single-user repo
+- **Prefer simplicity** — Choose straightforward solutions over clever abstractions
+
 ## Common Tasks
 
 ```bash

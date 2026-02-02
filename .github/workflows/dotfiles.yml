@@ -15,6 +15,11 @@ on:
       - ".github/workflows/dotfiles.yml"
   workflow_dispatch:
 
+# Cancel in-progress runs on new pushes to the same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   # Skip interactive prompts
   DEBIAN_FRONTEND: noninteractive
@@ -26,64 +31,55 @@ jobs:
   shellcheck:
     name: Lint Shell Scripts
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install ShellCheck
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
-
       - name: Run ShellCheck on scripts
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          scandir: './script'
+          ignore_paths: '*.py'
+          severity: warning
+
+      - name: Check chezmoi template scripts
         run: |
-          echo "Checking script/ directory..."
-          # Only check bash/sh scripts (skip python, zsh-only scripts)
-          for f in script/*; do
-            # Skip non-files
-            [[ -f "$f" ]] || continue
-
-            # Check shebang to determine if shellcheck supports it
-            shebang=$(head -1 "$f")
-            case "$shebang" in
-              *python*|*zsh*)
-                echo "Skipping $f (not a bash/sh script)"
-                continue
-                ;;
-            esac
-
-            echo "Checking $f..."
-            shellcheck "$f"
-          done
-
-          echo ""
           echo "Checking chezmoi run scripts..."
           # Extract bash from .tmpl files for checking
           for f in chezmoi/run_*.sh.tmpl; do
             if [[ -f "$f" ]]; then
               echo "Checking $f..."
               # Remove chezmoi template directives for shellcheck
-              sed 's/{{.*}}/PLACEHOLDER/g' "$f" | shellcheck -s bash -
+              sed 's/{{.*}}/PLACEHOLDER/g' "$f" | shellcheck -s bash - || exit 1
             fi
           done
+          echo "✓ All chezmoi templates passed"
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Test chezmoi apply on Linux
+  # Test chezmoi apply on multiple platforms
   # ─────────────────────────────────────────────────────────────────────────
-  chezmoi-linux:
-    name: Chezmoi Apply (Linux)
-    runs-on: ubuntu-latest
+  chezmoi-apply:
+    name: Chezmoi Apply (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    outputs:
+      chezmoi-version: ${{ steps.chezmoi.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Install chezmoi
+        id: chezmoi
         run: |
           sh -c "$(curl -fsLS get.chezmoi.io)" -- -b ~/.local/bin
           echo "$HOME/.local/bin" >> $GITHUB_PATH
-
-      - name: Verify chezmoi version
-        run: chezmoi --version
+          echo "version=$(~/.local/bin/chezmoi --version | head -1)" >> $GITHUB_OUTPUT
 
       - name: Test chezmoi init (dry-run)
-        run: |
-          chezmoi init --source ./chezmoi --dry-run --verbose
+        run: chezmoi init --source ./chezmoi --dry-run --verbose
 
       - name: Test chezmoi apply (skip run_once scripts)
         run: |
@@ -93,43 +89,27 @@ jobs:
 
       - name: Verify dotfiles were applied
         run: |
-          echo "Checking symlinked/copied files..."
+          files=(
+            ~/.zshrc
+            ~/.tmux.conf
+            ~/.gitconfig
+            ~/.zsh_plugins.txt
+            ~/.config/nvim/init.lua
+          )
+          dirs=(
+            ~/.config/nvim
+          )
 
-          # Check critical files exist
-          test -f ~/.zshrc && echo "✓ ~/.zshrc exists"
-          test -f ~/.tmux.conf && echo "✓ ~/.tmux.conf exists"
-          test -f ~/.gitconfig && echo "✓ ~/.gitconfig exists"
-          test -f ~/.zsh_plugins.txt && echo "✓ ~/.zsh_plugins.txt exists"
-          test -d ~/.config/nvim && echo "✓ ~/.config/nvim exists"
-          test -f ~/.config/nvim/init.lua && echo "✓ ~/.config/nvim/init.lua exists"
+          failed=0
+          for f in "${files[@]}"; do
+            [[ -f "$f" ]] && echo "✓ $f" || { echo "✗ $f"; failed=1; }
+          done
+          for d in "${dirs[@]}"; do
+            [[ -d "$d" ]] && echo "✓ $d" || { echo "✗ $d"; failed=1; }
+          done
 
-          echo ""
-          echo "All critical dotfiles present!"
-
-  # ─────────────────────────────────────────────────────────────────────────
-  # Test chezmoi apply on macOS
-  # ─────────────────────────────────────────────────────────────────────────
-  chezmoi-macos:
-    name: Chezmoi Apply (macOS)
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install chezmoi
-        run: |
-          sh -c "$(curl -fsLS get.chezmoi.io)" -- -b ~/.local/bin
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-
-      - name: Test chezmoi apply (skip run_once scripts)
-        run: |
-          chezmoi apply --source ./chezmoi --exclude=scripts --verbose
-
-      - name: Verify dotfiles were applied
-        run: |
-          test -f ~/.zshrc && echo "✓ ~/.zshrc exists"
-          test -f ~/.tmux.conf && echo "✓ ~/.tmux.conf exists"
-          test -f ~/.gitconfig && echo "✓ ~/.gitconfig exists"
-          test -d ~/.config/nvim && echo "✓ ~/.config/nvim exists"
+          [[ $failed -eq 0 ]] || { echo "❌ Missing dotfiles!"; exit 1; }
+          echo "✓ All dotfiles present!"
 
   # ─────────────────────────────────────────────────────────────────────────
   # Test zsh configuration
@@ -137,7 +117,8 @@ jobs:
   zsh-config:
     name: Test Zsh Config
     runs-on: ubuntu-latest
-    needs: chezmoi-linux
+    timeout-minutes: 10
+    needs: chezmoi-apply
     steps:
       - uses: actions/checkout@v4
 
@@ -152,10 +133,18 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           chezmoi apply --source ./chezmoi --exclude=scripts
 
+      - name: Cache antidote
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/antidote
+          key: antidote-${{ hashFiles('chezmoi/dot_zsh_plugins.txt') }}
+
       - name: Install antidote (zsh plugin manager)
         run: |
-          git clone --depth=1 https://github.com/mattmc3/antidote.git \
-            "${XDG_DATA_HOME:-$HOME/.local/share}/antidote"
+          if [[ ! -d "${XDG_DATA_HOME:-$HOME/.local/share}/antidote" ]]; then
+            git clone --depth=1 https://github.com/mattmc3/antidote.git \
+              "${XDG_DATA_HOME:-$HOME/.local/share}/antidote"
+          fi
 
       - name: Test zsh syntax
         shell: zsh {0}
@@ -195,7 +184,6 @@ jobs:
           fi
 
           echo ""
-          echo "SHELL=$SHELL"
           echo "ZSH_VERSION=$ZSH_VERSION"
           echo "✓ zshrc loaded successfully"
 
@@ -205,23 +193,28 @@ jobs:
   nvim-config:
     name: Test Neovim Config
     runs-on: ubuntu-latest
-    needs: chezmoi-linux
+    timeout-minutes: 10
+    needs: chezmoi-apply
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Neovim (latest stable)
-        run: |
-          # Ubuntu apt has old neovim - install latest stable from GitHub releases
-          curl -LO https://github.com/neovim/neovim/releases/download/stable/nvim-linux-x86_64.tar.gz
-          sudo tar -xzf nvim-linux-x86_64.tar.gz -C /opt
-          sudo ln -sf /opt/nvim-linux-x86_64/bin/nvim /usr/local/bin/nvim
-          nvim --version | head -1
+      - name: Install Neovim
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
 
       - name: Install chezmoi and apply dotfiles
         run: |
           sh -c "$(curl -fsLS get.chezmoi.io)" -- -b ~/.local/bin
           export PATH="$HOME/.local/bin:$PATH"
           chezmoi apply --source ./chezmoi --exclude=scripts
+
+      - name: Cache lazy.nvim plugins
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/nvim/lazy
+          key: lazy-nvim-${{ hashFiles('chezmoi/private_dot_config/nvim/lazy-lock.json') }}
 
       - name: Verify neovim config structure
         run: |
@@ -259,7 +252,8 @@ jobs:
   tmux-config:
     name: Test Tmux Config
     runs-on: ubuntu-latest
-    needs: chezmoi-linux
+    timeout-minutes: 5
+    needs: chezmoi-apply
     steps:
       - uses: actions/checkout@v4
 
@@ -274,9 +268,15 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           chezmoi apply --source ./chezmoi --exclude=scripts
 
+      - name: Cache gpakosz/.tmux
+        uses: actions/cache@v4
+        with:
+          path: ~/.tmux
+          key: gpakosz-tmux-v1
+
       - name: Install gpakosz/.tmux framework
         run: |
-          git clone --depth=1 https://github.com/gpakosz/.tmux.git ~/.tmux
+          [[ -d ~/.tmux ]] || git clone --depth=1 https://github.com/gpakosz/.tmux.git ~/.tmux
 
       - name: Verify tmux config files
         run: |
@@ -302,6 +302,7 @@ jobs:
   install-deps:
     name: Test Install Script
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
 
@@ -317,3 +318,32 @@ jobs:
           sh -c "$(curl -fsLS get.chezmoi.io)" -- -b ~/.local/bin
           export PATH="$HOME/.local/bin:$PATH"
           ./script/setup --dry-run
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Summary job for branch protection
+  # ─────────────────────────────────────────────────────────────────────────
+  ci-success:
+    name: CI Success
+    runs-on: ubuntu-latest
+    needs: [shellcheck, chezmoi-apply, zsh-config, nvim-config, tmux-config, install-deps]
+    if: always()
+    steps:
+      - name: Check all jobs passed
+        run: |
+          results=(
+            "shellcheck=${{ needs.shellcheck.result }}"
+            "chezmoi-apply=${{ needs.chezmoi-apply.result }}"
+            "zsh-config=${{ needs.zsh-config.result }}"
+            "nvim-config=${{ needs.nvim-config.result }}"
+            "tmux-config=${{ needs.tmux-config.result }}"
+            "install-deps=${{ needs.install-deps.result }}"
+          )
+
+          failed=0
+          for r in "${results[@]}"; do
+            job="${r%%=*}" result="${r#*=}"
+            [[ "$result" == "success" ]] && echo "✓ $job" || { echo "✗ $job ($result)"; failed=1; }
+          done
+
+          [[ $failed -eq 0 ]] || { echo "❌ CI failed"; exit 1; }
+          echo "✓ All jobs passed!"
