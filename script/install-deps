@@ -167,11 +167,23 @@ set_default_shell() {
         log "zsh is already the default shell"
         return
     fi
+
+    # Skip in containers or non-interactive environments
+    if [[ -f /.dockerenv ]] || [[ -n "${REMOTE_CONTAINERS:-}" ]] || [[ -n "${CODESPACES:-}" ]]; then
+        log "Skipping chsh in container environment"
+        return
+    fi
+
     log "Setting zsh as default shell..."
     if $DRY_RUN; then
         log "(dry-run) Would run: chsh -s $(which zsh)"
     else
-        chsh -s "$(which zsh)" || warn "Failed to change shell (may need sudo)"
+        # Use sudo chsh to avoid password prompt if possible
+        if sudo -n true 2>/dev/null; then
+            sudo chsh -s "$(which zsh)" "$USER" || warn "Failed to change shell"
+        else
+            warn "Skipping chsh (requires password). Run manually: chsh -s \$(which zsh)"
+        fi
     fi
 }
 
