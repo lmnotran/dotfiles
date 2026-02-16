@@ -98,7 +98,6 @@ export GIT_EDITOR="$EDITOR"
 
 # Source additional zsh configs
 source_if_exists() { [[ -r "$1" ]] && source "$1" || true; }
-source_if_exists "$HOME/.config/zsh/git-overrides.zsh"
 source_if_exists "$HOME/.config/zsh/aliases.zsh"
 
 export GPG_TTY=$(tty)
