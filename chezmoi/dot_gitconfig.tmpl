@@ -1,0 +1,11 @@
+[user]
+	name = "Mason Tran"
+{{- if hasPrefix "usmastra" .chezmoi.username }}
+	email = "mason.tran@lego.com"
+{{- else }}
+	email = "mason@Lmnotran.com"
+{{- end }}
+[commit]
+	gpgsign = true
+[pull]
+	rebase = true
