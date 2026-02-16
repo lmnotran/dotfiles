@@ -11,7 +11,10 @@ Context and rules for AI assistants working on this repository.
   - `git filter-repo` / `git filter-branch`
   - Any history-rewriting operations
 - **NEVER commit secrets** — Use environment variables or Bitwarden Secrets Manager
-- **Prefer amending commits** — When fixing something related to the previous commit, use `git commit --amend` to keep history clean rather than creating fixup commits. Logically independent changes should always be separate commits.
+- **Always sign commits** — Use `git commit -S` for all commits
+- **Re-sign after filter-repo** — After using `git filter-repo`, re-sign affected commits with `git rebase --committer-date-is-author-date --exec 'git commit --amend --no-edit -S' <base>`
+- **Use conventional commits** — Format: `type(scope): description` (e.g., `docs:`, `fix:`, `refactor:`, `chore:`)
+- **Prefer amending commits** — When fixing something related to the previous commit, use `git commit --amend` to keep history clean rather than creating fixup commits. Update the commit message if needed to reflect the newly added changes. Logically independent changes should always be separate commits.
 
 ## Repository Structure
 
