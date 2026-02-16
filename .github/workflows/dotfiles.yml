@@ -78,6 +78,9 @@ jobs:
           echo "$HOME/.local/bin" >> $GITHUB_PATH
           echo "version=$(~/.local/bin/chezmoi --version | head -1)" >> $GITHUB_OUTPUT
 
+      - name: Run chezmoi doctor
+        run: chezmoi doctor || true
+
       - name: Test chezmoi init (dry-run)
         run: chezmoi init --source ./chezmoi --dry-run --verbose
 
