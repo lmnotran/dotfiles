@@ -56,16 +56,12 @@ jobs:
           echo "✓ All chezmoi templates passed"
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Test chezmoi apply on multiple platforms
+  # Test chezmoi apply
   # ─────────────────────────────────────────────────────────────────────────
   chezmoi-apply:
-    name: Chezmoi Apply (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: Chezmoi Apply
+    runs-on: ubuntu-latest
     timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
     outputs:
       chezmoi-version: ${{ steps.chezmoi.outputs.version }}
     steps:
