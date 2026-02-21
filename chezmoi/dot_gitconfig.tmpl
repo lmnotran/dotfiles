@@ -1,6 +1,8 @@
 [user]
 	name = "Mason Tran"
-{{- if hasPrefix "usmastra" .chezmoi.username }}
+{{- $userHost := printf "%s@%s" .chezmoi.username .chezmoi.hostname -}}
+{{- $isWork := or (hasPrefix "usmastra" .chezmoi.username) (has $userHost .work.knownUserHosts) -}}
+{{- if $isWork }}
 	email = "mason.tran@lego.com"
 {{- else }}
 	email = "mason@Lmnotran.com"

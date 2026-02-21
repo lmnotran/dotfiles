@@ -41,7 +41,7 @@ test -e "${HOME}/.iterm2_shell_integration.zsh" && source "${HOME}/.iterm2_shell
 export PATH="/opt/homebrew/opt/grep/libexec/gnubin:$PATH"
 {{- end }}
 
-{{- if or (eq .chezmoi.hostname "lemon.whatbox.ca") (eq .chezmoi.hostname "usmastra@honeycrisp.local") }}
+{{- if eq .chezmoi.hostname "lemon.whatbox.ca" }}
 # Custom brew prefix
 export BREW_PREFIX="${HOME}/repos/brew/"
 export PATH="${BREW_PREFIX}/bin:$PATH"
@@ -104,7 +104,9 @@ export GPG_TTY=$(tty)
 export ZSH_TMUX_UNICODE=true
 export GO111MODULE=on
 
-{{- if hasPrefix "usmastra" .chezmoi.username }}
+{{- $userHost := printf "%s@%s" .chezmoi.username .chezmoi.hostname -}}
+{{- $isWork := or (hasPrefix "usmastra" .chezmoi.username) (has $userHost .work.knownUserHosts) -}}
+{{- if $isWork }}
 #===============================================================================
 # Work (lego) config
 #===============================================================================

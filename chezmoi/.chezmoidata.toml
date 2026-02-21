@@ -1,0 +1,6 @@
+# Known work machine identifiers (username@hostname)
+# Used when the username isn't the standard work prefix (usmastra*)
+[work]
+knownUserHosts = [
+  "mason@allston-st",
+]

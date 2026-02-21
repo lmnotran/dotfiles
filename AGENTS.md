@@ -42,7 +42,7 @@ Context and rules for AI assistants working on this repository.
 
 - Owner: Mason Tran
 - Primary machines: allston-st (Linux), various macOS and Linux hosts
-- Work username prefix: `usmastra`
+- Work detection: username prefix `usmastra` OR `username@hostname` listed in `.chezmoidata.toml`
 - Shell: zsh with antidote plugin manager
 - Editor: neovim (or VS Code in VS Code terminal)
 
