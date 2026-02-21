@@ -1,27 +1,37 @@
 #!/bin/bash
 #
 # Downloads SSH and GPG keys from Bitwarden and installs them locally.
+# On work machines, sets up both personal and work keys plus an SSH config
+# entry for github-personal.
+#
 # Requires: Bitwarden CLI (bw) - https://bitwarden.com/help/cli/
 #
-# Usage:
-#   1. Store your SSH private/public keys as attachments in a Bitwarden item
-#   2. Store your GPG private key as an attachment in a Bitwarden item
-#   3. Update the ITEM_NAME variables below with your Bitwarden item names
-#   4. Run this script: ./script/setup-keys
+# Usage: ./script/setup-keys
 #
 
 set -euo pipefail
 
-# =============================================================================
-# Configuration - Update these with your Bitwarden item names
-# =============================================================================
-SSH_ITEM_NAME="SSH Key - Personal"      # Name of the Bitwarden item with SSH keys
-GPG_ITEM_NAME="GPG Key - Personal"      # Name of the Bitwarden item with GPG key
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(dirname "$SCRIPT_DIR")"
 
-# Attachment filenames as stored in Bitwarden
-SSH_PRIVATE_KEY_FILENAME="id_ed25519"
-SSH_PUBLIC_KEY_FILENAME="id_ed25519.pub"
-GPG_PRIVATE_KEY_FILENAME="private.gpg"
+# =============================================================================
+# Configuration - Bitwarden item names and attachment filenames
+# =============================================================================
+
+# Personal keys (always available)
+SSH_PERSONAL_ITEM="SSH Key - Personal"
+GPG_PERSONAL_ITEM="GPG Key - Personal"
+SSH_PERSONAL_PRIVATE="id_ed25519"
+SSH_PERSONAL_PUBLIC="id_ed25519.pub"
+
+# Work keys (only used on work machines)
+SSH_WORK_ITEM="SSH Key - Work"
+GPG_WORK_ITEM="GPG Key - Work"
+SSH_WORK_PRIVATE="id_ed25519_work"
+SSH_WORK_PUBLIC="id_ed25519_work.pub"
+
+# GPG attachment filename (same name in both Bitwarden items)
+GPG_ATTACHMENT="private.gpg"
 
 # =============================================================================
 # Helper functions
@@ -85,61 +95,133 @@ get_item_id() {
 }
 
 # =============================================================================
+# Work machine detection
+# Reads work.knownUserHosts from chezmoi/.chezmoidata.toml via chezmoi data,
+# matching the same logic used in chezmoi/dot_gitconfig.tmpl and dot_zshrc.tmpl.
+# =============================================================================
+is_work_machine() {
+    local username
+    username=$(whoami)
+
+    if [[ "$username" == usmastra* ]]; then
+        return 0
+    fi
+
+    local user_host="${username}@$(hostname -s)"
+    chezmoi data --source "$REPO_DIR" --format json \
+        | jq -e --arg uh "$user_host" '.work.knownUserHosts | any(. == $uh)' > /dev/null 2>&1
+}
+
+# =============================================================================
 # SSH Key Setup
 # =============================================================================
 setup_ssh_keys() {
-    info "Setting up SSH keys..."
+    local label="$1"
+    local item_name="$2"
+    local private_key="$3"
+    local public_key="$4"
+
+    info "Setting up $label SSH keys..."
 
     local item_id
-    item_id=$(get_item_id "$SSH_ITEM_NAME") || return 1
+    item_id=$(get_item_id "$item_name") || return 1
 
-    # Create .ssh directory with correct permissions
     mkdir -p ~/.ssh
     chmod 700 ~/.ssh
 
-    # Download private key
-    info "Downloading SSH private key..."
-    bw get attachment "$SSH_PRIVATE_KEY_FILENAME" --itemid "$item_id" --output ~/.ssh/"$SSH_PRIVATE_KEY_FILENAME"
-    chmod 600 ~/.ssh/"$SSH_PRIVATE_KEY_FILENAME"
+    info "Downloading $label SSH private key..."
+    bw get attachment "$private_key" --itemid "$item_id" --output ~/.ssh/"$private_key"
+    chmod 600 ~/.ssh/"$private_key"
 
-    # Download public key
-    info "Downloading SSH public key..."
-    bw get attachment "$SSH_PUBLIC_KEY_FILENAME" --itemid "$item_id" --output ~/.ssh/"$SSH_PUBLIC_KEY_FILENAME"
-    chmod 644 ~/.ssh/"$SSH_PUBLIC_KEY_FILENAME"
+    info "Downloading $label SSH public key..."
+    bw get attachment "$public_key" --itemid "$item_id" --output ~/.ssh/"$public_key"
+    chmod 644 ~/.ssh/"$public_key"
 
-    success "SSH keys installed to ~/.ssh/"
+    success "$label SSH keys installed to ~/.ssh/"
 }
 
 # =============================================================================
 # GPG Key Setup
 # =============================================================================
 setup_gpg_keys() {
-    info "Setting up GPG keys..."
+    local label="$1"
+    local item_name="$2"
+
+    info "Setting up $label GPG keys..."
 
     local item_id
-    item_id=$(get_item_id "$GPG_ITEM_NAME") || return 1
+    item_id=$(get_item_id "$item_name") || return 1
 
-    # Download to temp file
     local temp_gpg
     temp_gpg=$(mktemp)
     trap 'rm -f "$temp_gpg"' EXIT
 
-    info "Downloading GPG private key..."
-    bw get attachment "$GPG_PRIVATE_KEY_FILENAME" --itemid "$item_id" --output "$temp_gpg"
+    info "Downloading $label GPG private key..."
+    bw get attachment "$GPG_ATTACHMENT" --itemid "$item_id" --output "$temp_gpg"
 
-    # Import the key
-    info "Importing GPG key..."
+    info "Importing $label GPG key..."
     gpg --import "$temp_gpg"
 
-    # Clean up
     rm -f "$temp_gpg"
 
-    success "GPG key imported successfully"
+    success "$label GPG key imported successfully"
 
-    # Show imported key
     echo ""
     info "Imported GPG keys:"
     gpg --list-secret-keys --keyid-format LONG
+}
+
+# =============================================================================
+# SSH Config (work machines only)
+# =============================================================================
+setup_ssh_config_work() {
+    local config_file="$HOME/.ssh/config"
+    local marker="Host github-personal"
+
+    if [[ -f "$config_file" ]] && grep -q "^$marker" "$config_file"; then
+        info "SSH config entry for github-personal already exists, skipping"
+        return 0
+    fi
+
+    info "Adding github-personal SSH config entry..."
+
+    mkdir -p ~/.ssh
+    chmod 700 ~/.ssh
+
+    if [[ -s "$config_file" ]]; then
+        echo "" >> "$config_file"
+    fi
+
+    cat >> "$config_file" <<EOF
+Host github-personal
+    HostName github.com
+    IdentityFile ~/.ssh/$SSH_PERSONAL_PRIVATE
+    IdentitiesOnly yes
+EOF
+
+    chmod 600 "$config_file"
+    success "SSH config entry added for github-personal"
+}
+
+# =============================================================================
+# Orchestrators
+# =============================================================================
+do_ssh() {
+    setup_ssh_keys "personal" "$SSH_PERSONAL_ITEM" "$SSH_PERSONAL_PRIVATE" "$SSH_PERSONAL_PUBLIC"
+    if is_work_machine; then
+        echo ""
+        setup_ssh_keys "work" "$SSH_WORK_ITEM" "$SSH_WORK_PRIVATE" "$SSH_WORK_PUBLIC"
+        echo ""
+        setup_ssh_config_work
+    fi
+}
+
+do_gpg() {
+    setup_gpg_keys "personal" "$GPG_PERSONAL_ITEM"
+    if is_work_machine; then
+        echo ""
+        setup_gpg_keys "work" "$GPG_WORK_ITEM"
+    fi
 }
 
 # =============================================================================
@@ -159,6 +241,14 @@ main() {
 
     echo ""
 
+    if is_work_machine; then
+        info "Work machine detected — will set up personal AND work keys"
+    else
+        info "Personal machine detected — will set up personal keys only"
+    fi
+
+    echo ""
+
     # Interactive menu
     echo "What would you like to set up?"
     echo "  1) SSH keys only"
@@ -170,15 +260,15 @@ main() {
 
     case "$choice" in
         1)
-            setup_ssh_keys
+            do_ssh
             ;;
         2)
-            setup_gpg_keys
+            do_gpg
             ;;
         3)
-            setup_ssh_keys
+            do_ssh
             echo ""
-            setup_gpg_keys
+            do_gpg
             ;;
         q|Q)
             echo "Exiting."
