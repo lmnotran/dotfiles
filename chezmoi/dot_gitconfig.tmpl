@@ -7,6 +7,16 @@
 {{- else }}
 	email = "mason@Lmnotran.com"
 {{- end }}
+{{- $email := "mason@Lmnotran.com" -}}
+{{- if $isWork }}
+{{- $email = "mason.tran@lego.com" -}}
+{{- end }}
+{{- if lookPath "gpg" -}}
+{{-   $signingKey := output "sh" "-c" (printf "gpg --list-keys --keyid-format long --with-colons '%s' 2>/dev/null || true" $email) | regexFind "[A-F0-9]{16}" -}}
+{{-   if $signingKey }}
+	signingkey = {{ $signingKey }}
+{{-   end -}}
+{{- end }}
 [commit]
 	gpgsign = true
 [pull]
