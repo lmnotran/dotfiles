@@ -6,6 +6,22 @@ bwunlock() {
     export BW_SESSION="$(bw unlock --raw)" && echo "✓ Vault unlocked"
 }
 
+# Authenticate with Bitwarden Secrets Manager
+# Usage: bwsauth
+bwsauth() {
+    if [[ -z "${BW_SESSION:-}" ]]; then
+        echo "Bitwarden vault is locked. Unlocking..."
+        bwunlock || return 1
+    fi
+    export BWS_ACCESS_TOKEN="$(bw get password 'BWS Access Token' 2>/dev/null)"
+    if [[ -n "$BWS_ACCESS_TOKEN" ]]; then
+        echo "✓ BWS authenticated"
+    else
+        echo "✗ Failed to get BWS Access Token from vault" >&2
+        return 1
+    fi
+}
+
 # Load secrets from Bitwarden Secrets Manager
 # Usage: secrets <profile> [profile2] [profile3] ...
 secrets() {
