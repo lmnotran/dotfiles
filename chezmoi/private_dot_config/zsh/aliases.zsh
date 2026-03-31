@@ -1,8 +1,20 @@
 # Custom aliases
 
+# Unlock Bitwarden vault and export session
+# Usage: bwunlock
+bwunlock() {
+    export BW_SESSION="$(bw unlock --raw)" && echo "✓ Vault unlocked"
+}
+
 # Load secrets from Bitwarden Secrets Manager
 # Usage: secrets <profile> [profile2] [profile3] ...
 secrets() {
+    # Unlock vault if needed
+    if [[ -z "${BW_SESSION:-}" ]]; then
+        echo "Bitwarden vault is locked. Unlocking..."
+        bwunlock || return 1
+    fi
+
     local output
     for profile in "$@"; do
         output="$(~/repos/dotfiles/script/load-secrets "$profile")" || return 1
