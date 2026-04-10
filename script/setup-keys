@@ -1,12 +1,18 @@
 #!/bin/bash
 #
-# Downloads SSH and GPG keys from Bitwarden and installs them locally.
-# On work machines, sets up both personal and work keys plus an SSH config
-# entry for github-personal.
+# Sets up SSH and GPG keys for personal and work use.
 #
-# Requires: Bitwarden CLI (bw) - https://bitwarden.com/help/cli/
+# SSH keys are generated locally (per-machine) and uploaded to the appropriate
+# GitHub account via `gh ssh-key add`. The private key never leaves this
+# machine. GPG signing keys come from Bitwarden since signing identity is
+# typically shared across machines.
 #
-# Usage: ./script/setup-keys [ssh|gpg|both]
+# Requires: ssh-keygen, gh (for SSH upload); Bitwarden CLI (bw) + gpg for GPG.
+#
+# Usage: ./script/setup-keys [selection...]
+#   Selections: personal-ssh | work-ssh | personal-gpg | work-gpg | all
+#   Pass as multiple args or comma-separated. With no args, an interactive
+#   multi-select menu is shown.
 #
 
 set -euo pipefail
@@ -15,38 +21,36 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 
 # =============================================================================
-# Configuration - Bitwarden item names and attachment filenames
+# Configuration
 # =============================================================================
 
-# Personal keys (always available)
-SSH_PERSONAL_ITEM="Personal Key"
-GPG_PERSONAL_ITEM="GPG Key - Personal"
+# SSH key filenames (stored in ~/.ssh)
 SSH_PERSONAL_PRIVATE="id_ed25519"
-SSH_PERSONAL_PUBLIC="id_ed25519.pub"
-
-# Work keys (only used on work machines)
-SSH_WORK_ITEM="LEGO SSH Key"
-GPG_WORK_ITEM="GPG Key - Work"
 SSH_WORK_PRIVATE="id_ed25519_work"
-SSH_WORK_PUBLIC="id_ed25519_work.pub"
 
-# GPG attachment filename (same name in both Bitwarden items)
+# GitHub accounts that own each SSH key
+GH_PERSONAL_ACCOUNT="lmnotran"
+GH_WORK_ACCOUNT="mason-tran_lego"
+
+# Work GitHub organization (used for the SSO authorization link)
+WORK_ORG="LEGO-CPL"
+
+# Bitwarden items (GPG only — SSH keys are generated locally)
+GPG_PERSONAL_ITEM="GPG Key - Personal"
+GPG_WORK_ITEM="GPG Key - Work"
 GPG_ATTACHMENT="private.gpg"
 
-# =============================================================================
-# Helper functions
-# =============================================================================
-info() {
-    echo -e "\033[1;34m==>\033[0m $1"
-}
+# Track which SSH keys were generated so we can print SSO / manage links
+GENERATED_PERSONAL_SSH=0
+GENERATED_WORK_SSH=0
 
-success() {
-    echo -e "\033[1;32m==>\033[0m $1"
-}
-
-error() {
-    echo -e "\033[1;31mError:\033[0m $1" >&2
-}
+# =============================================================================
+# Helpers
+# =============================================================================
+info()    { echo -e "\033[1;34m==>\033[0m $1"; }
+success() { echo -e "\033[1;32m==>\033[0m $1"; }
+warn()    { echo -e "\033[1;33mWarning:\033[0m $1"; }
+error()   { echo -e "\033[1;31mError:\033[0m $1" >&2; }
 
 check_bw_installed() {
     if ! command -v bw &> /dev/null; then
@@ -113,43 +117,93 @@ is_work_machine() {
 }
 
 # =============================================================================
-# SSH Key Setup
+# gh helpers
 # =============================================================================
-setup_ssh_keys() {
-    local label="$1"
-    local item_name="$2"
-    local private_key="$3"
-    local public_key="$4"
+is_gh_account_logged_in() {
+    local account="$1"
+    gh auth status 2>&1 | grep -q "Logged in to github.com account $account"
+}
 
-    info "Setting up $label SSH keys..."
-
-    local item_json
-    item_json=$(bw get item "$item_name" 2>/dev/null) || {
-        error "Could not find Bitwarden item: $item_name"
-        return 1
-    }
-
-    if ! echo "$item_json" | jq -e '.sshKey' > /dev/null 2>&1; then
-        error "'$item_name' is not an SSH Key item in Bitwarden"
-        return 1
-    fi
-
-    mkdir -p ~/.ssh
-    chmod 700 ~/.ssh
-
-    info "Extracting $label SSH private key..."
-    echo "$item_json" | jq -r '.sshKey.privateKey' > ~/.ssh/"$private_key"
-    chmod 600 ~/.ssh/"$private_key"
-
-    info "Extracting $label SSH public key..."
-    echo "$item_json" | jq -r '.sshKey.publicKey' > ~/.ssh/"$public_key"
-    chmod 644 ~/.ssh/"$public_key"
-
-    success "$label SSH keys installed to ~/.ssh/"
+get_active_gh_account() {
+    gh auth status 2>&1 | awk '
+        /Logged in to github.com account/ { acct=$7 }
+        /Active account: true/            { print acct; exit }
+    '
 }
 
 # =============================================================================
-# GPG Key Setup
+# SSH Key Setup — per-machine ed25519 key, uploaded to the matching gh account
+# =============================================================================
+generate_ssh_key() {
+    local label="$1"
+    local private_key="$2"
+    local gh_account="$3"
+
+    local key_path="$HOME/.ssh/$private_key"
+    local pub_path="${key_path}.pub"
+    local comment="$(whoami)@$(hostname -s)"
+
+    info "Setting up $label SSH key..."
+    mkdir -p ~/.ssh
+    chmod 700 ~/.ssh
+
+    if [[ -f "$key_path" ]]; then
+        info "$key_path already exists — skipping generation"
+    else
+        info "Generating ed25519 key at $key_path (you'll be prompted for a passphrase)"
+        ssh-keygen -t ed25519 -C "$comment" -f "$key_path"
+        chmod 600 "$key_path"
+        chmod 644 "$pub_path"
+        success "$label SSH key generated"
+    fi
+
+    echo ""
+    info "$label public key:"
+    cat "$pub_path"
+    echo ""
+
+    upload_ssh_to_gh "$label" "$pub_path" "$gh_account" "$comment"
+}
+
+upload_ssh_to_gh() {
+    local label="$1"
+    local pub_path="$2"
+    local gh_account="$3"
+    local title="$4"
+
+    if ! command -v gh &> /dev/null; then
+        warn "gh CLI not installed — skipping upload for $label."
+        echo "  Add manually at: https://github.com/settings/keys"
+        return 0
+    fi
+
+    if ! is_gh_account_logged_in "$gh_account"; then
+        warn "gh account '$gh_account' is not logged in — skipping upload for $label."
+        echo "  Run: gh auth login   (then re-run this script, or add the key manually)"
+        return 0
+    fi
+
+    local prev_active
+    prev_active=$(get_active_gh_account || true)
+
+    if [[ -n "$prev_active" && "$prev_active" != "$gh_account" ]]; then
+        gh auth switch --user "$gh_account" > /dev/null
+    fi
+
+    info "Uploading $label public key to gh account '$gh_account' as '$title'..."
+    if gh ssh-key add "$pub_path" --title "$title"; then
+        success "Uploaded $label key to $gh_account"
+    else
+        warn "Could not upload $label key to $gh_account (already present, or token missing admin:public_key scope)"
+    fi
+
+    if [[ -n "$prev_active" && "$prev_active" != "$gh_account" ]]; then
+        gh auth switch --user "$prev_active" > /dev/null
+    fi
+}
+
+# =============================================================================
+# GPG Key Setup — still pulled from Bitwarden (shared signing identity)
 # =============================================================================
 setup_gpg_keys() {
     local label="$1"
@@ -180,22 +234,52 @@ setup_gpg_keys() {
 }
 
 # =============================================================================
-# Orchestrators
+# Orchestrators — called per selection
 # =============================================================================
-do_ssh() {
-    setup_ssh_keys "personal" "$SSH_PERSONAL_ITEM" "$SSH_PERSONAL_PRIVATE" "$SSH_PERSONAL_PUBLIC"
-    if is_work_machine; then
-        echo ""
-        setup_ssh_keys "work" "$SSH_WORK_ITEM" "$SSH_WORK_PRIVATE" "$SSH_WORK_PUBLIC"
-    fi
+do_personal_ssh() {
+    generate_ssh_key "personal" "$SSH_PERSONAL_PRIVATE" "$GH_PERSONAL_ACCOUNT"
+    GENERATED_PERSONAL_SSH=1
 }
 
-do_gpg() {
+do_work_ssh() {
+    generate_ssh_key "work" "$SSH_WORK_PRIVATE" "$GH_WORK_ACCOUNT"
+    GENERATED_WORK_SSH=1
+}
+
+do_personal_gpg() {
     setup_gpg_keys "personal" "$GPG_PERSONAL_ITEM"
-    if is_work_machine; then
-        echo ""
-        setup_gpg_keys "work" "$GPG_WORK_ITEM"
-    fi
+}
+
+do_work_gpg() {
+    setup_gpg_keys "work" "$GPG_WORK_ITEM"
+}
+
+# =============================================================================
+# Selection handling
+# =============================================================================
+print_menu() {
+    echo "Which keys would you like to set up? (comma-separated, e.g. 1,2)"
+    echo "  1) Personal SSH key  (generate locally, upload to gh '$GH_PERSONAL_ACCOUNT')"
+    echo "  2) LEGO/work SSH key (generate locally, upload to gh '$GH_WORK_ACCOUNT')"
+    echo "  3) Personal GPG key  (from Bitwarden item '$GPG_PERSONAL_ITEM')"
+    echo "  4) Work GPG key      (from Bitwarden item '$GPG_WORK_ITEM')"
+    echo "  a) All of the above"
+    echo "  q) Quit"
+    echo ""
+}
+
+# Normalize a single selection token to a canonical name (or "all"/"quit"/invalid)
+normalize_selection() {
+    local sel="${1,,}"
+    case "$sel" in
+        1|personal-ssh|personal_ssh)              echo "personal-ssh" ;;
+        2|work-ssh|work_ssh|lego|lego-ssh)        echo "work-ssh" ;;
+        3|personal-gpg|personal_gpg)              echo "personal-gpg" ;;
+        4|work-gpg|work_gpg|lego-gpg)             echo "work-gpg" ;;
+        a|all)                                    echo "all" ;;
+        q|quit|exit)                              echo "quit" ;;
+        *)                                        echo "invalid:$sel" ;;
+    esac
 }
 
 # =============================================================================
@@ -203,64 +287,97 @@ do_gpg() {
 # =============================================================================
 main() {
     echo "========================================"
-    echo "  Bitwarden Key Setup Script"
+    echo "  Key Setup Script"
     echo "========================================"
     echo ""
 
-    check_bw_installed
-    ensure_logged_in
-
-    info "Syncing Bitwarden vault..."
-    bw sync
-
-    echo ""
-
     if is_work_machine; then
-        info "Work machine detected — will set up personal AND work keys"
+        info "Work machine detected"
     else
-        info "Personal machine detected — will set up personal keys only"
+        info "Personal machine detected"
     fi
-
     echo ""
 
-    local choice="${1:-}"
-    choice="${choice,,}"
+    # Collect raw selections from args or interactive prompt
+    local -a raw_selections=()
+    if [[ $# -gt 0 ]]; then
+        local arg parts
+        for arg in "$@"; do
+            IFS=',' read -ra parts <<< "$arg"
+            raw_selections+=("${parts[@]}")
+        done
+    else
+        print_menu
+        local input
+        read -rp "Choice: " input
+        IFS=',' read -ra raw_selections <<< "$input"
+    fi
 
-    if [[ -z "$choice" ]]; then
-        # Interactive menu
-        echo "What would you like to set up?"
-        echo "  1) SSH keys only"
-        echo "  2) GPG keys only"
-        echo "  3) Both SSH and GPG keys"
-        echo "  q) Quit"
+    # Normalize and dedupe into an associative set
+    local -A chosen=()
+    local sel norm
+    for sel in "${raw_selections[@]:-}"; do
+        sel="${sel// /}"
+        [[ -z "$sel" ]] && continue
+        norm=$(normalize_selection "$sel")
+        case "$norm" in
+            quit)
+                echo "Exiting."
+                exit 0
+                ;;
+            all)
+                chosen["personal-ssh"]=1
+                chosen["work-ssh"]=1
+                chosen["personal-gpg"]=1
+                chosen["work-gpg"]=1
+                ;;
+            invalid:*)
+                error "Invalid selection: ${norm#invalid:}"
+                exit 1
+                ;;
+            *)
+                chosen["$norm"]=1
+                ;;
+        esac
+    done
+
+    if [[ ${#chosen[@]} -eq 0 ]]; then
+        error "No selections made."
+        exit 1
+    fi
+
+    # Only initialize Bitwarden if a GPG step was selected
+    if [[ -n "${chosen[personal-gpg]:-}" || -n "${chosen[work-gpg]:-}" ]]; then
+        check_bw_installed
+        ensure_logged_in
+        info "Syncing Bitwarden vault..."
+        bw sync
         echo ""
-        read -rp "Choice [1-3, q]: " choice
     fi
 
-    case "$choice" in
-        1|ssh)
-            do_ssh
-            ;;
-        2|gpg)
-            do_gpg
-            ;;
-        3|both)
-            do_ssh
-            echo ""
-            do_gpg
-            ;;
-        q|Q)
-            echo "Exiting."
-            exit 0
-            ;;
-        *)
-            error "Invalid choice. Usage: setup-keys [ssh|gpg|both]"
-            exit 1
-            ;;
-    esac
+    # Execute selected steps in a deterministic order
+    if [[ -n "${chosen[personal-ssh]:-}" ]]; then do_personal_ssh; echo ""; fi
+    if [[ -n "${chosen[work-ssh]:-}"     ]]; then do_work_ssh;     echo ""; fi
+    if [[ -n "${chosen[personal-gpg]:-}" ]]; then do_personal_gpg; echo ""; fi
+    if [[ -n "${chosen[work-gpg]:-}"     ]]; then do_work_gpg;     echo ""; fi
 
-    echo ""
     success "Key setup complete!"
+
+    # Print manage/SSO links for any SSH key that was generated
+    if [[ "$GENERATED_PERSONAL_SSH" == "1" || "$GENERATED_WORK_SSH" == "1" ]]; then
+        echo ""
+        info "Manage your GitHub SSH keys:"
+        if [[ "$GENERATED_PERSONAL_SSH" == "1" ]]; then
+            echo "  Personal ($GH_PERSONAL_ACCOUNT): https://github.com/settings/keys"
+        fi
+        if [[ "$GENERATED_WORK_SSH" == "1" ]]; then
+            echo "  Work ($GH_WORK_ACCOUNT):     https://github.com/settings/keys"
+            echo ""
+            warn "Work key likely needs SSO authorization for the '$WORK_ORG' org."
+            echo "  On the keys page above, click 'Configure SSO' next to the new key and authorize '$WORK_ORG'."
+            echo "  Org SSO page: https://github.com/orgs/$WORK_ORG/sso"
+        fi
+    fi
 }
 
 main "$@"
