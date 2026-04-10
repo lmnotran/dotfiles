@@ -1,0 +1,15 @@
+{{- $isWork := or (hasPrefix "usmastra" .chezmoi.username) (has (printf "%s@%s" .chezmoi.username .chezmoi.hostname) .work.knownUserHosts) -}}
+{{- if $isWork }}
+Host github.com
+    IdentityFile ~/.ssh/id_ed25519_work
+    IdentitiesOnly yes
+
+Host github-personal
+    HostName github.com
+    IdentityFile ~/.ssh/id_ed25519
+    IdentitiesOnly yes
+{{- else }}
+Host github.com
+    IdentityFile ~/.ssh/id_ed25519
+    IdentitiesOnly yes
+{{- end }}

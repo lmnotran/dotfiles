@@ -180,38 +180,6 @@ setup_gpg_keys() {
 }
 
 # =============================================================================
-# SSH Config (work machines only)
-# =============================================================================
-setup_ssh_config_work() {
-    local config_file="$HOME/.ssh/config"
-    local marker="Host github-personal"
-
-    if [[ -f "$config_file" ]] && grep -q "^$marker" "$config_file"; then
-        info "SSH config entry for github-personal already exists, skipping"
-        return 0
-    fi
-
-    info "Adding github-personal SSH config entry..."
-
-    mkdir -p ~/.ssh
-    chmod 700 ~/.ssh
-
-    if [[ -s "$config_file" ]]; then
-        echo "" >> "$config_file"
-    fi
-
-    cat >> "$config_file" <<EOF
-Host github-personal
-    HostName github.com
-    IdentityFile ~/.ssh/$SSH_PERSONAL_PRIVATE
-    IdentitiesOnly yes
-EOF
-
-    chmod 600 "$config_file"
-    success "SSH config entry added for github-personal"
-}
-
-# =============================================================================
 # Orchestrators
 # =============================================================================
 do_ssh() {
@@ -219,8 +187,6 @@ do_ssh() {
     if is_work_machine; then
         echo ""
         setup_ssh_keys "work" "$SSH_WORK_ITEM" "$SSH_WORK_PRIVATE" "$SSH_WORK_PUBLIC"
-        echo ""
-        setup_ssh_config_work
     fi
 }
 
