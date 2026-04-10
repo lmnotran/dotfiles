@@ -6,7 +6,7 @@
 #
 # Requires: Bitwarden CLI (bw) - https://bitwarden.com/help/cli/
 #
-# Usage: ./script/setup-keys
+# Usage: ./script/setup-keys [ssh|gpg|both]
 #
 
 set -euo pipefail
@@ -19,13 +19,13 @@ REPO_DIR="$(dirname "$SCRIPT_DIR")"
 # =============================================================================
 
 # Personal keys (always available)
-SSH_PERSONAL_ITEM="SSH Key - Personal"
+SSH_PERSONAL_ITEM="Personal Key"
 GPG_PERSONAL_ITEM="GPG Key - Personal"
 SSH_PERSONAL_PRIVATE="id_ed25519"
 SSH_PERSONAL_PUBLIC="id_ed25519.pub"
 
 # Work keys (only used on work machines)
-SSH_WORK_ITEM="SSH Key - Work"
+SSH_WORK_ITEM="LEGO SSH Key"
 GPG_WORK_ITEM="GPG Key - Work"
 SSH_WORK_PRIVATE="id_ed25519_work"
 SSH_WORK_PUBLIC="id_ed25519_work.pub"
@@ -123,18 +123,26 @@ setup_ssh_keys() {
 
     info "Setting up $label SSH keys..."
 
-    local item_id
-    item_id=$(get_item_id "$item_name") || return 1
+    local item_json
+    item_json=$(bw get item "$item_name" 2>/dev/null) || {
+        error "Could not find Bitwarden item: $item_name"
+        return 1
+    }
+
+    if ! echo "$item_json" | jq -e '.sshKey' > /dev/null 2>&1; then
+        error "'$item_name' is not an SSH Key item in Bitwarden"
+        return 1
+    fi
 
     mkdir -p ~/.ssh
     chmod 700 ~/.ssh
 
-    info "Downloading $label SSH private key..."
-    bw get attachment "$private_key" --itemid "$item_id" --output ~/.ssh/"$private_key"
+    info "Extracting $label SSH private key..."
+    echo "$item_json" | jq -r '.sshKey.privateKey' > ~/.ssh/"$private_key"
     chmod 600 ~/.ssh/"$private_key"
 
-    info "Downloading $label SSH public key..."
-    bw get attachment "$public_key" --itemid "$item_id" --output ~/.ssh/"$public_key"
+    info "Extracting $label SSH public key..."
+    echo "$item_json" | jq -r '.sshKey.publicKey' > ~/.ssh/"$public_key"
     chmod 644 ~/.ssh/"$public_key"
 
     success "$label SSH keys installed to ~/.ssh/"
@@ -249,23 +257,28 @@ main() {
 
     echo ""
 
-    # Interactive menu
-    echo "What would you like to set up?"
-    echo "  1) SSH keys only"
-    echo "  2) GPG keys only"
-    echo "  3) Both SSH and GPG keys"
-    echo "  q) Quit"
-    echo ""
-    read -rp "Choice [1-3, q]: " choice
+    local choice="${1:-}"
+    choice="${choice,,}"
+
+    if [[ -z "$choice" ]]; then
+        # Interactive menu
+        echo "What would you like to set up?"
+        echo "  1) SSH keys only"
+        echo "  2) GPG keys only"
+        echo "  3) Both SSH and GPG keys"
+        echo "  q) Quit"
+        echo ""
+        read -rp "Choice [1-3, q]: " choice
+    fi
 
     case "$choice" in
-        1)
+        1|ssh)
             do_ssh
             ;;
-        2)
+        2|gpg)
             do_gpg
             ;;
-        3)
+        3|both)
             do_ssh
             echo ""
             do_gpg
@@ -275,7 +288,7 @@ main() {
             exit 0
             ;;
         *)
-            error "Invalid choice"
+            error "Invalid choice. Usage: setup-keys [ssh|gpg|both]"
             exit 1
             ;;
     esac
