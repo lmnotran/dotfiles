@@ -1,0 +1,3 @@
+# Kill gpg-agent on logout so cached passphrases don't persist
+# beyond the login session
+gpgconf --kill gpg-agent
