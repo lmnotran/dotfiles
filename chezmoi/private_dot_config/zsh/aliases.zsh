@@ -3,6 +3,19 @@
 # Unlock Bitwarden vault and export session
 # Usage: bwunlock
 bwunlock() {
+    if ! command -v bw &>/dev/null; then
+        echo "✗ bw CLI not installed" >&2
+        return 1
+    fi
+
+    local status
+    status="$(bw status 2>/dev/null | grep -o '"status":"[^"]*"' | cut -d'"' -f4)"
+
+    if [[ "$status" == "unauthenticated" ]]; then
+        echo "Not logged in. Logging in..."
+        bw login || return 1
+    fi
+
     export BW_SESSION="$(bw unlock --raw)" && echo "✓ Vault unlocked"
 }
 
@@ -13,8 +26,11 @@ bwsauth() {
         echo "Bitwarden vault is locked. Unlocking..."
         bwunlock || return 1
     fi
-    export BWS_ACCESS_TOKEN="$(bw get password 'BWS Access Token' 2>/dev/null)"
-    if [[ -n "$BWS_ACCESS_TOKEN" ]]; then
+
+    local bws_token
+    bws_token="$(bw get password 'BWS Access Token')"
+    if [[ -n "$bws_token" ]]; then
+        export BWS_ACCESS_TOKEN="$bws_token"
         echo "✓ BWS authenticated"
     else
         echo "✗ Failed to get BWS Access Token from vault" >&2
