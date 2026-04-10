@@ -8,10 +8,10 @@ bwunlock() {
         return 1
     fi
 
-    local status
-    status="$(bw status 2>/dev/null | grep -o '"status":"[^"]*"' | cut -d'"' -f4)"
+    local vault_status
+    vault_status="$(bw status 2>/dev/null | grep -o '"status":"[^"]*"' | cut -d'"' -f4)"
 
-    if [[ "$status" == "unauthenticated" ]]; then
+    if [[ "$vault_status" == "unauthenticated" ]]; then
         echo "Not logged in. Logging in..."
         bw login || return 1
     fi
