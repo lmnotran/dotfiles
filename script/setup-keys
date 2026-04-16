@@ -190,11 +190,38 @@ upload_ssh_to_gh() {
         gh auth switch --user "$gh_account" > /dev/null
     fi
 
+    # Check if key is already on GitHub by matching its public key
+    local pub_key
+    pub_key=$(awk '{print $2}' "$pub_path")
+    if gh ssh-key list 2>/dev/null | grep -q "$pub_key"; then
+        local fingerprint
+        fingerprint=$(ssh-keygen -lf "$pub_path" -E sha256 2>/dev/null | awk '{print $2}')
+        info "$label key already present on $gh_account ($fingerprint)"
+        if [[ -n "$prev_active" && "$prev_active" != "$gh_account" ]]; then
+            gh auth switch --user "$prev_active" > /dev/null
+        fi
+        return 0
+    fi
+
     info "Uploading $label public key to gh account '$gh_account' as '$title'..."
-    if gh ssh-key add "$pub_path" --title "$title"; then
+    local add_output
+    if add_output=$(gh ssh-key add "$pub_path" --title "$title" 2>&1); then
         success "Uploaded $label key to $gh_account"
+    elif echo "$add_output" | grep -q "admin:public_key"; then
+        warn "Token is missing the admin:public_key scope — requesting it now..."
+        if gh auth refresh -h github.com -s admin:public_key; then
+            info "Retrying upload..."
+            if gh ssh-key add "$pub_path" --title "$title"; then
+                success "Uploaded $label key to $gh_account"
+            else
+                warn "Could not upload $label key to $gh_account (key may already be present)"
+            fi
+        else
+            warn "Could not refresh token — add the key manually at https://github.com/settings/keys"
+        fi
     else
-        warn "Could not upload $label key to $gh_account (already present, or token missing admin:public_key scope)"
+        warn "Could not upload $label key to $gh_account (key may already be present)"
+        [[ -n "$add_output" ]] && echo "  $add_output"
     fi
 
     if [[ -n "$prev_active" && "$prev_active" != "$gh_account" ]]; then
@@ -360,6 +387,26 @@ main() {
     if [[ "$chosen" == *" work-gpg "*     ]]; then do_work_gpg;     echo ""; fi
 
     success "Key setup complete!"
+
+    # Print fingerprints for any SSH keys that were set up
+    if [[ "$GENERATED_PERSONAL_SSH" == "1" || "$GENERATED_WORK_SSH" == "1" ]]; then
+        echo ""
+        local key_path fingerprint
+        if [[ "$GENERATED_PERSONAL_SSH" == "1" ]]; then
+            key_path="$HOME/.ssh/$SSH_PERSONAL_PRIVATE.pub"
+            fingerprint=$(ssh-keygen -lf "$key_path" -E sha256 2>/dev/null | awk '{print $2}')
+            echo "  $(whoami)@$(hostname -s)"
+            echo "  $fingerprint"
+            echo ""
+        fi
+        if [[ "$GENERATED_WORK_SSH" == "1" ]]; then
+            key_path="$HOME/.ssh/$SSH_WORK_PRIVATE.pub"
+            fingerprint=$(ssh-keygen -lf "$key_path" -E sha256 2>/dev/null | awk '{print $2}')
+            echo "  $(whoami)@$(hostname -s)"
+            echo "  $fingerprint"
+            echo ""
+        fi
+    fi
 
     # Print manage/SSO links for any SSH key that was generated
     if [[ "$GENERATED_PERSONAL_SSH" == "1" || "$GENERATED_WORK_SSH" == "1" ]]; then
