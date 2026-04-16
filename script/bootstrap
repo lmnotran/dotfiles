@@ -56,7 +56,7 @@ main() {
     log "Source: $REPO_DIR"
     echo ""
 
-    log_step "Step 1/3: Installing chezmoi"
+    log_step "Step 1/2: Installing chezmoi"
     if command -v chezmoi &>/dev/null; then
         log_ok "chezmoi already installed"
     else
@@ -69,19 +69,15 @@ main() {
     fi
     echo ""
 
-    log_step "Step 2/3: Linking chezmoi source"
-    local chezmoi_default="$HOME/.local/share/chezmoi"
-    if [[ "$(readlink "$chezmoi_default" 2>/dev/null)" == "$REPO_DIR" ]]; then
-        log_ok "Symlink already points to $REPO_DIR"
-    else
-        rm -rf "$chezmoi_default"
-        ln -s "$REPO_DIR" "$chezmoi_default"
-        log_ok "Linked $chezmoi_default → $REPO_DIR"
+    log_step "Step 2/2: Applying dotfiles"
+    # Persist sourceDir so future `chezmoi apply` calls work without --source
+    mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/chezmoi"
+    CHEZMOI_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/chezmoi/chezmoi.toml"
+    if ! grep -q "^sourceDir" "$CHEZMOI_CONFIG" 2>/dev/null; then
+        printf 'sourceDir = "%s"\n' "$REPO_DIR" >> "$CHEZMOI_CONFIG"
+        log_ok "Wrote sourceDir to $CHEZMOI_CONFIG"
     fi
-    echo ""
-
-    log_step "Step 3/3: Applying dotfiles"
-    chezmoi init --apply
+    chezmoi init --source "$REPO_DIR" --apply
     log_ok "Dotfiles applied"
     echo ""
 

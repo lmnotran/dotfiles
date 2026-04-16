@@ -1,0 +1,25 @@
+# Managed by chezmoi
+# Runs for POSIX login shells and some display managers. Keep PATH setup here
+# so non-zsh and non-interactive contexts can find brew and pyenv shims.
+
+{{- if eq .chezmoi.os "linux" }}
+if [ -d /home/linuxbrew/.linuxbrew ]; then
+    eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+elif [ -d "$HOME/.linuxbrew" ]; then
+    eval "$($HOME/.linuxbrew/bin/brew shellenv)"
+fi
+{{- end }}
+
+{{- if eq .chezmoi.os "darwin" }}
+if [ -d /opt/homebrew ]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+elif [ -d /usr/local/Homebrew ]; then
+    eval "$(/usr/local/bin/brew shellenv)"
+fi
+{{- end }}
+
+export PYENV_ROOT="$HOME/.pyenv"
+[ -d "$PYENV_ROOT/bin" ] && export PATH="$PYENV_ROOT/bin:$PATH"
+if command -v pyenv >/dev/null 2>&1; then
+    eval "$(pyenv init --path)"
+fi
