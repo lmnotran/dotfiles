@@ -25,7 +25,7 @@ REPO_DIR="$(dirname "$SCRIPT_DIR")"
 # =============================================================================
 
 # SSH key filenames (stored in ~/.ssh)
-SSH_PERSONAL_PRIVATE="id_ed25519"
+SSH_PERSONAL_PRIVATE="id_ed25519_personal"
 SSH_WORK_PRIVATE="id_ed25519_work"
 
 # GitHub accounts that own each SSH key
@@ -271,7 +271,7 @@ print_menu() {
 # Normalize a single selection token to a canonical name (or "all"/"quit"/invalid)
 normalize_selection() {
     local sel
-    sel="$(echo "$1" | tr '[:upper:]' '[:lower:]')"
+    sel=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
     case "$sel" in
         1|personal-ssh|personal_ssh)              echo "personal-ssh" ;;
         2|work-ssh|work_ssh|lego|lego-ssh)        echo "work-ssh" ;;
@@ -314,8 +314,8 @@ main() {
         IFS=',' read -ra raw_selections <<< "$input"
     fi
 
-    # Normalize and dedupe selections (Bash 3 compatible — no associative arrays)
-    local chosen_personal_ssh="" chosen_work_ssh="" chosen_personal_gpg="" chosen_work_gpg=""
+    # Normalize and dedupe into a space-delimited set (bash 3.2: no assoc arrays)
+    local chosen=" "
     local sel norm
     for sel in "${raw_selections[@]:-}"; do
         sel="${sel// /}"
@@ -327,29 +327,25 @@ main() {
                 exit 0
                 ;;
             all)
-                chosen_personal_ssh=1
-                chosen_work_ssh=1
-                chosen_personal_gpg=1
-                chosen_work_gpg=1
+                chosen=" personal-ssh work-ssh personal-gpg work-gpg "
                 ;;
             invalid:*)
                 error "Invalid selection: ${norm#invalid:}"
                 exit 1
                 ;;
-            personal-ssh)  chosen_personal_ssh=1 ;;
-            work-ssh)      chosen_work_ssh=1 ;;
-            personal-gpg)  chosen_personal_gpg=1 ;;
-            work-gpg)      chosen_work_gpg=1 ;;
+            *)
+                [[ "$chosen" == *" $norm "* ]] || chosen="$chosen$norm "
+                ;;
         esac
     done
 
-    if [[ -z "$chosen_personal_ssh$chosen_work_ssh$chosen_personal_gpg$chosen_work_gpg" ]]; then
+    if [[ "$chosen" == " " ]]; then
         error "No selections made."
         exit 1
     fi
 
     # Only initialize Bitwarden if a GPG step was selected
-    if [[ -n "$chosen_personal_gpg" || -n "$chosen_work_gpg" ]]; then
+    if [[ "$chosen" == *" personal-gpg "* || "$chosen" == *" work-gpg "* ]]; then
         check_bw_installed
         ensure_logged_in
         info "Syncing Bitwarden vault..."
@@ -358,10 +354,10 @@ main() {
     fi
 
     # Execute selected steps in a deterministic order
-    if [[ -n "$chosen_personal_ssh" ]]; then do_personal_ssh; echo ""; fi
-    if [[ -n "$chosen_work_ssh"     ]]; then do_work_ssh;     echo ""; fi
-    if [[ -n "$chosen_personal_gpg" ]]; then do_personal_gpg; echo ""; fi
-    if [[ -n "$chosen_work_gpg"     ]]; then do_work_gpg;     echo ""; fi
+    if [[ "$chosen" == *" personal-ssh "* ]]; then do_personal_ssh; echo ""; fi
+    if [[ "$chosen" == *" work-ssh "*     ]]; then do_work_ssh;     echo ""; fi
+    if [[ "$chosen" == *" personal-gpg "* ]]; then do_personal_gpg; echo ""; fi
+    if [[ "$chosen" == *" work-gpg "*     ]]; then do_work_gpg;     echo ""; fi
 
     success "Key setup complete!"
 
