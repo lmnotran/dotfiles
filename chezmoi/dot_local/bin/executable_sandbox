@@ -1,0 +1,259 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# sandbox — manage git worktree sandboxes for concurrent agent sessions
+#
+# Config: place a .sandbox.conf in your repo root to customize submodule list.
+# Format: one submodule path per line. If absent, all submodules are skipped.
+
+resolve_repo_root() {
+  local git_common_dir
+  git_common_dir="$(git rev-parse --git-common-dir 2>/dev/null)" || true
+  if [[ -n "$git_common_dir" && "$git_common_dir" != ".git" ]]; then
+    # Inside a worktree — resolve back to main repo
+    dirname "$git_common_dir"
+  else
+    git rev-parse --show-toplevel 2>/dev/null || { echo "Error: not in a git repo" >&2; exit 1; }
+  fi
+}
+
+init_repo() {
+  REPO_ROOT="$(resolve_repo_root)"
+  WORKTREES_DIR="$REPO_ROOT/.worktrees"
+
+  # Load submodule list from .sandbox.conf if present
+  SUBMODULES=()
+  if [[ -f "$REPO_ROOT/.sandbox.conf" ]]; then
+    while IFS= read -r line; do
+      [[ -z "$line" || "$line" == \#* ]] && continue
+      SUBMODULES+=("$line")
+    done < "$REPO_ROOT/.sandbox.conf"
+  fi
+}
+
+usage() {
+  cat <<EOF
+Usage: sandbox <command> [options]
+
+Manage git worktree sandboxes for concurrent AI agent sessions.
+Run from inside a git repo (or a worktree of one).
+
+Commands:
+  create <name> [--branch <branch>]   Create a new sandbox (worktree + submodules)
+  list                                 List active sandboxes
+  rm <name> [--force]                  Remove a sandbox
+  cd <name>                            Print sandbox path (use: cd \$(sandbox cd <name>))
+
+Options for 'create':
+  <name>              Ticket key or freeform name (e.g. PROJ-1234, my-experiment)
+  --branch <branch>   Use existing branch instead of creating feature/<name>-sandbox
+
+Examples:
+  sandbox create PROJ-1234
+  sandbox create PROJ-1234 --branch feature/PROJ-1234-fix-audio
+  cd \$(sandbox cd PROJ-1234)
+  sandbox list
+  sandbox rm PROJ-1234
+
+Config:
+  Place a .sandbox.conf in your repo root listing submodule paths to init:
+    path/to/submodule_a
+    path/to/submodule_b
+EOF
+}
+
+cmd_create() {
+  init_repo
+  local name=""
+  local branch=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --branch) branch="$2"; shift 2 ;;
+      -*) echo "Unknown option: $1" >&2; exit 1 ;;
+      *) name="$1"; shift ;;
+    esac
+  done
+
+  if [[ -z "$name" ]]; then
+    echo "Error: sandbox name required" >&2
+    echo "Usage: sandbox create <name> [--branch <branch>]" >&2
+    exit 1
+  fi
+
+  local worktree_path="$WORKTREES_DIR/$name"
+
+  if [[ -d "$worktree_path" ]]; then
+    echo "Error: sandbox '$name' already exists at $worktree_path" >&2
+    echo "Use 'sandbox cd $name' or 'sandbox rm $name' first." >&2
+    exit 1
+  fi
+
+  mkdir -p "$WORKTREES_DIR"
+
+  # Determine default branch (master or main)
+  local default_branch="master"
+  if ! git -C "$REPO_ROOT" rev-parse --verify "$default_branch" &>/dev/null; then
+    default_branch="main"
+  fi
+
+  # Determine branch
+  if [[ -z "$branch" ]]; then
+    branch="feature/${name}-sandbox"
+    if git -C "$REPO_ROOT" rev-parse --verify "$branch" &>/dev/null; then
+      echo "Branch '$branch' exists, attaching worktree to it."
+      git -C "$REPO_ROOT" worktree add "$worktree_path" "$branch"
+    else
+      echo "Creating branch '$branch' from $default_branch."
+      git -C "$REPO_ROOT" worktree add -b "$branch" "$worktree_path" "$default_branch"
+    fi
+  else
+    if git -C "$REPO_ROOT" rev-parse --verify "$branch" &>/dev/null; then
+      git -C "$REPO_ROOT" worktree add "$worktree_path" "$branch"
+    else
+      echo "Error: branch '$branch' does not exist." >&2
+      exit 1
+    fi
+  fi
+
+  # Initialize submodules from .sandbox.conf
+  if [[ ${#SUBMODULES[@]} -gt 0 ]]; then
+    echo "Initializing submodules..."
+    local modules_dir="$REPO_ROOT/.git/modules"
+
+    for sub in "${SUBMODULES[@]}"; do
+      local sub_module_git="$modules_dir/$sub"
+      local sub_working_dir="$worktree_path/$sub"
+
+      if [[ -d "$sub_module_git" ]]; then
+        # Module objects exist locally — wire up the gitdir pointer
+        mkdir -p "$sub_working_dir"
+        echo "gitdir: $sub_module_git" > "$sub_working_dir/.git"
+
+        # Checkout the correct commit for this branch's tree
+        local target_commit
+        target_commit="$(git -C "$worktree_path" ls-tree HEAD "$sub" | awk '{print $3}')"
+        if [[ -n "$target_commit" ]]; then
+          git --git-dir="$sub_module_git" --work-tree="$sub_working_dir" checkout -f "$target_commit" 2>/dev/null \
+            || echo "  Warning: could not checkout $sub at $target_commit"
+        fi
+      else
+        # Not yet cloned — try normal init (requires network)
+        git -C "$worktree_path" submodule update --init "$sub" 2>/dev/null \
+          || echo "  Warning: could not init $sub (not available locally, needs network)"
+      fi
+    done
+  fi
+
+  echo ""
+  echo "Sandbox created: $worktree_path"
+  echo "Branch: $branch"
+  echo ""
+  echo "To enter:  cd $worktree_path"
+}
+
+cmd_list() {
+  init_repo
+  if [[ ! -d "$WORKTREES_DIR" ]]; then
+    echo "No sandboxes found."
+    return
+  fi
+
+  local found=0
+  while IFS= read -r line; do
+    if [[ "$line" == worktree\ * ]]; then
+      local wt_path="${line#worktree }"
+      if [[ "$wt_path" == "$WORKTREES_DIR"/* ]]; then
+        found=1
+        local wt_name
+        wt_name="$(basename "$wt_path")"
+        local wt_branch=""
+      fi
+    elif [[ "$line" == branch\ * && $found -eq 1 ]]; then
+      wt_branch="${line#branch refs/heads/}"
+      printf "%-20s %-40s %s\n" "$wt_name" "$wt_branch" "$wt_path"
+      found=0
+    elif [[ -z "$line" ]]; then
+      if [[ $found -eq 1 ]]; then
+        printf "%-20s %-40s %s\n" "$wt_name" "(detached)" "$wt_path"
+        found=0
+      fi
+    fi
+  done < <(git -C "$REPO_ROOT" worktree list --porcelain)
+
+  if [[ $found -eq 0 ]] && [[ ! -d "$WORKTREES_DIR" || -z "$(ls -A "$WORKTREES_DIR" 2>/dev/null)" ]]; then
+    echo "No sandboxes found."
+  fi
+}
+
+cmd_rm() {
+  init_repo
+  local name=""
+  local force=0
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --force) force=1; shift ;;
+      -*) echo "Unknown option: $1" >&2; exit 1 ;;
+      *) name="$1"; shift ;;
+    esac
+  done
+
+  if [[ -z "$name" ]]; then
+    echo "Error: sandbox name required" >&2
+    exit 1
+  fi
+
+  local worktree_path="$WORKTREES_DIR/$name"
+
+  if [[ ! -d "$worktree_path" ]]; then
+    echo "Error: sandbox '$name' not found." >&2
+    exit 1
+  fi
+
+  if [[ $force -eq 0 ]]; then
+    # Check for uncommitted changes (ignore submodule state — always present)
+    local dirty
+    dirty="$(git -C "$worktree_path" status --porcelain --ignore-submodules=dirty 2>/dev/null | grep -v '^??' | head -1 || true)"
+    if [[ -n "$dirty" ]]; then
+      echo "Error: sandbox '$name' has uncommitted changes. Use --force to override." >&2
+      echo "  Tip: commit or stash your work first." >&2
+      exit 1
+    fi
+  fi
+
+  if git -C "$REPO_ROOT" worktree remove --force "$worktree_path"; then
+    echo "Sandbox '$name' removed."
+    echo "Note: branch may still exist. To delete: git branch -d feature/${name}-sandbox"
+  else
+    echo "Error: could not remove worktree. Use 'sandbox rm $name --force' to override." >&2
+    exit 1
+  fi
+}
+
+cmd_cd() {
+  init_repo
+  local name="${1:-}"
+  if [[ -z "$name" ]]; then
+    echo "Error: sandbox name required" >&2
+    exit 1
+  fi
+
+  local worktree_path="$WORKTREES_DIR/$name"
+  if [[ ! -d "$worktree_path" ]]; then
+    echo "Error: sandbox '$name' not found." >&2
+    exit 1
+  fi
+
+  echo "$worktree_path"
+}
+
+# Main dispatch
+case "${1:-}" in
+  -h|--help|help|"") usage ;;
+  create) shift; cmd_create "$@" ;;
+  list)   cmd_list ;;
+  rm)     shift; cmd_rm "$@" ;;
+  cd)     shift; cmd_cd "$@" ;;
+  *) echo "Unknown command: $1" >&2; usage; exit 1 ;;
+esac
