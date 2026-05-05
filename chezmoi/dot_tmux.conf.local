@@ -3,19 +3,81 @@
 # This file is sourced by gpakosz/.tmux after the main config.
 # See https://github.com/gpakosz/.tmux for available options.
 #
-# Copy settings from .tmux/.tmux.conf.local and customize here.
+# Goal: match nvim keybindings as closely as possible.
+# Leader (prefix) = Ctrl-Space (mirrors nvim's Space leader)
 
 # -- general -------------------------------------------------------------------
 
+# Set prefix to Ctrl-Space
+set -g prefix C-Space
+unbind C-b
+bind C-Space send-prefix
+
 # -- display -------------------------------------------------------------------
+
+# Start windows and panes at 1 (not 0)
+set -g base-index 1
+setw -g pane-base-index 1
+set -g renumber-windows on
 
 # -- navigation ----------------------------------------------------------------
 
+# Pane navigation with Ctrl-hjkl (matches nvim Ctrl-h/j/k/l)
+bind -n C-h select-pane -L
+bind -n C-j select-pane -D
+bind -n C-k select-pane -U
+bind -n C-l select-pane -R
+
+# Pane splitting (matches nvim <c-w>s and <c-w>v)
+bind s split-window -v -c "#{pane_current_path}"
+bind v split-window -h -c "#{pane_current_path}"
+
+# Pane resizing with prefix + H/J/K/L
+bind -r H resize-pane -L 5
+bind -r J resize-pane -D 5
+bind -r K resize-pane -U 5
+bind -r L resize-pane -R 5
+
+# Window (buffer/tab) navigation (matches nvim [b / ]b / <leader>t/T)
+bind -n M-] next-window
+bind -n M-[ previous-window
+bind t next-window
+bind T previous-window
+
+# Window creation and closing (matches nvim <leader>bx)
+bind n new-window -c "#{pane_current_path}"
+bind x kill-pane
+
+# Swap windows (matches nvim <leader>b> / <leader>b<)
+bind > swap-window -t +1 \; next-window
+bind < swap-window -t -1 \; previous-window
+
 # -- copy mode -----------------------------------------------------------------
+
+# Vi-style copy mode (matches nvim visual mode)
+setw -g mode-keys vi
+bind Enter copy-mode
+bind -T copy-mode-vi v send-keys -X begin-selection
+bind -T copy-mode-vi V send-keys -X select-line
+bind -T copy-mode-vi C-v send-keys -X rectangle-toggle
+bind -T copy-mode-vi y send-keys -X copy-selection-and-cancel
+bind -T copy-mode-vi Escape send-keys -X cancel
 
 # -- buffers -------------------------------------------------------------------
 
 # -- user customizations -------------------------------------------------------
+
+# Quick reload (matches nvim <leader>R)
+bind R source-file ~/.tmux.conf \; display "Config reloaded"
+
+# Save (write) pane contents (matches nvim <leader>s concept)
+bind S command-prompt -p "Save pane to:" "capture-pane -S -32768 ; save-buffer '%%'"
+
+# Quit/close (matches nvim <leader>q)
+bind q confirm-before -p "Kill session? (y/n)" kill-session
+
+# Lazygit (matches nvim <leader>gl)
+bind g new-window -n "lazygit" -c "#{pane_current_path}" "lazygit"
 
 # -- plugins -------------------------------------------------------------------
 
