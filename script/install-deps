@@ -140,6 +140,11 @@ install_macos() {
     log "Installing packages via brew..."
     install_homebrew
     run brew install "${DEPS_BREW_BASE[@]}" "${DEPS_BREW_EXTRAS[@]}"
+
+    # Python deps for macOS-only tooling (e.g. AppKit clipboard writes
+    # used by Copilot CLI's ask-team-for-pr-review procedure).
+    log "Installing macOS-only Python deps..."
+    run pip3 install --user --quiet pyobjc-framework-Cocoa
 }
 
 install_antidote() {
