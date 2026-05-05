@@ -39,7 +39,8 @@ Manage git worktree sandboxes for concurrent AI agent sessions.
 Run from inside a git repo (or a worktree of one).
 
 Commands:
-  create <name> [--branch <branch>]   Create a new sandbox (worktree + submodules)
+  create <name> [options]              Create a new sandbox (worktree + submodules)
+  launch <name> [agent] [-- args...]   Launch an agent CLI in an existing sandbox
   list                                 List active sandboxes
   rm <name> [--force]                  Remove a sandbox
   cd <name>                            Print sandbox path (use: cd \$(sandbox cd <name>))
@@ -47,10 +48,20 @@ Commands:
 Options for 'create':
   <name>              Ticket key or freeform name (e.g. PROJ-1234, my-experiment)
   --branch <branch>   Use existing branch instead of creating feature/<name>-sandbox
+  --agent <agent>     Launch agent after creation (claude, copilot, opencode, or any command)
+  -- [args...]        Extra args passed to the agent
+
+Options for 'launch':
+  <name>              Sandbox name (must already exist)
+  [agent]             Agent to launch (default: claude). Any command works.
+  -- [args...]        Extra args passed to the agent
 
 Examples:
   sandbox create PROJ-1234
-  sandbox create PROJ-1234 --branch feature/PROJ-1234-fix-audio
+  sandbox create PROJ-1234 --agent claude
+  sandbox create PROJ-1234 --agent copilot -- --model gpt-4
+  sandbox launch PROJ-1234 opencode
+  sandbox launch PROJ-1234 -- --resume
   cd \$(sandbox cd PROJ-1234)
   sandbox list
   sandbox rm PROJ-1234
@@ -66,10 +77,14 @@ cmd_create() {
   init_repo
   local name=""
   local branch=""
+  local agent=""
+  local agent_args=()
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --branch) branch="$2"; shift 2 ;;
+      --agent) agent="$2"; shift 2 ;;
+      --) shift; agent_args=("$@"); break ;;
       -*) echo "Unknown option: $1" >&2; exit 1 ;;
       *) name="$1"; shift ;;
     esac
@@ -150,6 +165,58 @@ cmd_create() {
   echo "Branch: $branch"
   echo ""
   echo "To enter:  cd $worktree_path"
+
+  # Launch agent if requested
+  if [[ -n "$agent" ]]; then
+    launch_agent "$worktree_path" "$agent" "${agent_args[@]}"
+  fi
+}
+
+launch_agent() {
+  local worktree_path="$1"
+  local agent="$2"
+  shift 2
+  local agent_args=("$@")
+
+  echo "Launching '$agent' in $worktree_path..."
+  cd "$worktree_path"
+  exec "$agent" "${agent_args[@]}"
+}
+
+cmd_launch() {
+  init_repo
+  local name=""
+  local agent="claude"
+  local agent_args=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --) shift; agent_args=("$@"); break ;;
+      -*) echo "Unknown option: $1" >&2; exit 1 ;;
+      *)
+        if [[ -z "$name" ]]; then
+          name="$1"
+        else
+          agent="$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$name" ]]; then
+    echo "Error: sandbox name required" >&2
+    echo "Usage: sandbox launch <name> [agent] [-- args...]" >&2
+    exit 1
+  fi
+
+  local worktree_path="$WORKTREES_DIR/$name"
+  if [[ ! -d "$worktree_path" ]]; then
+    echo "Error: sandbox '$name' not found." >&2
+    exit 1
+  fi
+
+  launch_agent "$worktree_path" "$agent" "${agent_args[@]}"
 }
 
 cmd_list() {
@@ -252,6 +319,7 @@ cmd_cd() {
 case "${1:-}" in
   -h|--help|help|"") usage ;;
   create) shift; cmd_create "$@" ;;
+  launch) shift; cmd_launch "$@" ;;
   list)   cmd_list ;;
   rm)     shift; cmd_rm "$@" ;;
   cd)     shift; cmd_cd "$@" ;;
