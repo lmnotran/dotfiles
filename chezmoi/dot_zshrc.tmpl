@@ -49,6 +49,9 @@ eval "$("${BREW_PREFIX}"/bin/brew shellenv)"
 export PATH="$HOME/.local/bin:$PATH"
 export TERM="xterm-256color"
 
+# Custom completions
+fpath=("$HOME/.local/share/zsh/completions" $fpath)
+
 #===============================================================================
 # oh-my-zsh configuration
 #===============================================================================
