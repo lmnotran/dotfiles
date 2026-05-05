@@ -1,5 +1,8 @@
 vim.g.mapleader = " "
 
+-- Map F13 (Caps Lock via Karabiner) as an additional leader trigger
+vim.keymap.set({ "n", "v" }, "<F13>", " ", { remap = true })
+
 -- vim.uv was added in Neovim 0.10, older versions use vim.loop
 local uv = vim.uv or vim.loop
 
