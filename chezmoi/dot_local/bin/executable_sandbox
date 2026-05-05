@@ -70,6 +70,10 @@ Config:
   Place a .sandbox.conf in your repo root listing submodule paths to init:
     path/to/submodule_a
     path/to/submodule_b
+
+Tmux:
+  Launches create a new pane in a tmux session named after the repo.
+  Override with: SANDBOX_TMUX_SESSION=mysession sandbox launch ...
 EOF
 }
 
@@ -78,12 +82,14 @@ cmd_create() {
   local name=""
   local branch=""
   local agent=""
+  local no_tmux=0
   local agent_args=()
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --branch) branch="$2"; shift 2 ;;
       --agent) agent="$2"; shift 2 ;;
+      --no-tmux) no_tmux=1; shift ;;
       --) shift; agent_args=("$@"); break ;;
       -*) echo "Unknown option: $1" >&2; exit 1 ;;
       *) name="$1"; shift ;;
@@ -168,11 +174,15 @@ cmd_create() {
 
   # Launch agent if requested
   if [[ -n "$agent" ]]; then
-    launch_agent "$worktree_path" "$agent" ${agent_args[@]+"${agent_args[@]}"}
+    if [[ $no_tmux -eq 1 ]]; then
+      launch_agent_direct "$worktree_path" "$agent" ${agent_args[@]+"${agent_args[@]}"}
+    else
+      launch_agent "$worktree_path" "$agent" ${agent_args[@]+"${agent_args[@]}"}
+    fi
   fi
 }
 
-launch_agent() {
+launch_agent_direct() {
   local worktree_path="$1"
   local agent="$2"
   shift 2
@@ -183,14 +193,45 @@ launch_agent() {
   exec "$agent" ${agent_args[@]+"${agent_args[@]}"}
 }
 
+launch_agent() {
+  local worktree_path="$1"
+  local agent="$2"
+  shift 2
+  local agent_args=("$@")
+
+  local repo_name
+  repo_name="$(basename "$REPO_ROOT")"
+  local session="${SANDBOX_TMUX_SESSION:-$repo_name}"
+  local pane_name="$agent:$(basename "$worktree_path")"
+
+  # Build the command to run in the pane
+  local cmd="cd '$worktree_path' && exec $agent ${agent_args[*]+${agent_args[*]}}"
+
+  if [[ -n "${TMUX:-}" ]]; then
+    # Already inside tmux — split a new pane in current session
+    tmux split-window -h -t "$session" "$cmd"
+    tmux select-layout -t "$session" tiled
+  elif tmux has-session -t "$session" 2>/dev/null; then
+    # Session exists but we're not attached — add a new window
+    tmux new-window -t "$session" -n "$pane_name" "$cmd"
+    tmux attach-session -t "$session"
+  else
+    # No session — create one
+    tmux new-session -d -s "$session" -n "$pane_name" "$cmd"
+    tmux attach-session -t "$session"
+  fi
+}
+
 cmd_launch() {
   init_repo
   local name=""
   local agent="claude"
+  local no_tmux=0
   local agent_args=()
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --no-tmux) no_tmux=1; shift ;;
       --) shift; agent_args=("$@"); break ;;
       -*) echo "Unknown option: $1" >&2; exit 1 ;;
       *)
@@ -216,7 +257,11 @@ cmd_launch() {
     exit 1
   fi
 
-  launch_agent "$worktree_path" "$agent" ${agent_args[@]+"${agent_args[@]}"}
+  if [[ $no_tmux -eq 1 ]]; then
+    launch_agent_direct "$worktree_path" "$agent" ${agent_args[@]+"${agent_args[@]}"}
+  else
+    launch_agent "$worktree_path" "$agent" ${agent_args[@]+"${agent_args[@]}"}
+  fi
 }
 
 cmd_list() {
