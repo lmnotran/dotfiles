@@ -40,6 +40,39 @@ log_step() { echo -e "${BOLD}${BLUE}==>${RESET} ${BOLD}$*${RESET}"; }
 log_ok()   { echo -e "${GREEN}✓${RESET} $*"; }
 log_warn() { echo -e "${YELLOW}⚠${RESET} $*"; }
 
+apply_macos_preferences() {
+    local preferences_file="$REPO_DIR/script/macos-preferences.conf"
+
+    if [[ "$OSTYPE" != "darwin"* ]]; then
+        log "Skipping macOS preferences (non-macOS host)"
+        return
+    fi
+
+    if ! command -v defaults &>/dev/null; then
+        log_warn "Skipping macOS preferences (defaults command not found)"
+        return
+    fi
+
+    if [[ ! -f "$preferences_file" ]]; then
+        log_warn "Skipping macOS preferences (missing $preferences_file)"
+        return
+    fi
+
+    log "Applying macOS Dock preferences..."
+    while read -r domain key type value; do
+        [[ -z "$domain" ]] && continue
+        [[ "$domain" == "#"* ]] && continue
+
+        defaults write "$domain" "$key" "$type" "$value" || log_warn "Failed to set ${domain} ${key}"
+    done < "$preferences_file"
+
+    if command -v killall &>/dev/null; then
+        killall Dock || log_warn "Failed to restart Dock"
+    fi
+
+    log_ok "macOS preferences applied"
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
@@ -56,7 +89,7 @@ main() {
     log "Source: $REPO_DIR"
     echo ""
 
-    log_step "Step 1/2: Installing chezmoi"
+    log_step "Step 1/3: Installing chezmoi"
     if command -v chezmoi &>/dev/null; then
         log_ok "chezmoi already installed"
     else
@@ -69,7 +102,7 @@ main() {
     fi
     echo ""
 
-    log_step "Step 2/2: Applying dotfiles"
+    log_step "Step 2/3: Applying dotfiles"
     # Persist sourceDir so future `chezmoi apply` calls work without --source
     mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/chezmoi"
     CHEZMOI_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/chezmoi/chezmoi.toml"
@@ -79,6 +112,10 @@ main() {
     fi
     chezmoi init --source "$REPO_DIR" --apply
     log_ok "Dotfiles applied"
+    echo ""
+
+    log_step "Step 3/3: Applying macOS preferences"
+    apply_macos_preferences
     echo ""
 
     echo -e "${BOLD}${GREEN}✓ Bootstrap complete!${RESET}"
