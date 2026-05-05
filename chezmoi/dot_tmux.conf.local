@@ -8,10 +8,10 @@
 
 # -- general -------------------------------------------------------------------
 
-# Set prefix to Ctrl-Space
-set -g prefix C-Space
+# Set prefix to F13 (Caps Lock via Karabiner)
+set -g prefix F13
 unbind C-b
-bind C-Space send-prefix
+bind F13 send-prefix
 
 # -- display -------------------------------------------------------------------
 
