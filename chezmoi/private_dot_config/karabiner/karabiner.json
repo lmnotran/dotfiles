@@ -23,6 +23,7 @@
       },
       "devices": [
         {
+          "description": "GMMK PRO (USB HID)",
           "identifiers": {
             "is_keyboard": true,
             "product_id": 20548,
