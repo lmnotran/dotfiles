@@ -14,3 +14,4 @@ docker/deluge/config/auth
 *.key
 *.env
 bin/
+!chezmoi/dot_local/bin/
