@@ -1,0 +1,62 @@
+#compdef sandbox
+
+_sandbox_names() {
+  local repo_root worktrees_dir
+  repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || return
+  worktrees_dir="$repo_root/.worktrees"
+  [[ -d "$worktrees_dir" ]] || return
+  local -a names
+  names=("${(@f)$(ls "$worktrees_dir" 2>/dev/null)}")
+  compadd -a names
+}
+
+_sandbox_agents() {
+  local -a agents
+  agents=(claude copilot opencode)
+  # Also add any matching commands on PATH
+  compadd -a agents
+}
+
+_sandbox() {
+  local -a commands
+  commands=(
+    'create:Create a new sandbox (worktree + submodules)'
+    'launch:Launch an agent CLI in an existing sandbox'
+    'list:List active sandboxes'
+    'rm:Remove a sandbox'
+    'cd:Print sandbox path'
+  )
+
+  if (( CURRENT == 2 )); then
+    _describe 'command' commands
+    return
+  fi
+
+  case "${words[2]}" in
+    create)
+      _arguments \
+        '1:name:' \
+        '--branch[Use existing branch]:branch:__git_branch_names' \
+        '--agent[Launch agent after creation]:agent:_sandbox_agents' \
+        '*:: :->args'
+      ;;
+    launch)
+      if (( CURRENT == 3 )); then
+        _sandbox_names
+      elif (( CURRENT == 4 )); then
+        _sandbox_agents
+      fi
+      ;;
+    rm)
+      _arguments \
+        '1:name:_sandbox_names' \
+        '--force[Force removal even with uncommitted changes]'
+      ;;
+    cd)
+      _arguments '1:name:_sandbox_names'
+      ;;
+    list) ;;
+  esac
+}
+
+_sandbox "$@"
