@@ -22,6 +22,7 @@ _sandbox() {
   commands=(
     'create:Create a new sandbox (worktree + submodules)'
     'launch:Launch an agent CLI in an existing sandbox'
+    'rename:Rename sandbox branch'
     'list:List active sandboxes'
     'rm:Remove a sandbox'
     'cd:Print sandbox path'
@@ -45,6 +46,11 @@ _sandbox() {
         _sandbox_names
       elif (( CURRENT == 4 )); then
         _sandbox_agents
+      fi
+      ;;
+    rename)
+      if (( CURRENT == 3 )); then
+        _sandbox_names
       fi
       ;;
     rm)

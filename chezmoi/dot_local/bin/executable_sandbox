@@ -41,13 +41,14 @@ Run from inside a git repo (or a worktree of one).
 Commands:
   create <name> [options]              Create a new sandbox (worktree + submodules)
   launch <name> [agent] [-- args...]   Launch an agent CLI in an existing sandbox
+  rename <name> <new-branch>           Rename sandbox branch (e.g. feature/PROJ-1234-add-foo)
   list                                 List active sandboxes
   rm <name> [--force]                  Remove a sandbox
   cd <name>                            Print sandbox path (use: cd \$(sandbox cd <name>))
 
 Options for 'create':
   <name>              Ticket key or freeform name (e.g. PROJ-1234, my-experiment)
-  --branch <branch>   Use existing branch instead of creating feature/<name>-sandbox
+  --branch <branch>   Use existing branch instead of creating sandbox/<name>
   --agent <agent>     Launch agent after creation (claude, copilot, opencode, or any command)
   -- [args...]        Extra args passed to the agent
 
@@ -62,6 +63,7 @@ Examples:
   sandbox create PROJ-1234 --agent copilot -- --model gpt-4
   sandbox launch PROJ-1234 opencode
   sandbox launch PROJ-1234 -- --resume
+  sandbox rename PROJ-1234 feature/PROJ-1234-add-widget-support
   cd \$(sandbox cd PROJ-1234)
   sandbox list
   sandbox rm PROJ-1234
@@ -120,7 +122,7 @@ cmd_create() {
 
   # Determine branch
   if [[ -z "$branch" ]]; then
-    branch="feature/${name}-sandbox"
+    branch="sandbox/${name}"
     if git -C "$REPO_ROOT" rev-parse --verify "$branch" &>/dev/null; then
       echo "Branch '$branch' exists, attaching worktree to it."
       git -C "$REPO_ROOT" worktree add "$worktree_path" "$branch"
@@ -169,6 +171,11 @@ cmd_create() {
   echo ""
   echo "Sandbox created: $worktree_path"
   echo "Branch: $branch"
+  if [[ "$branch" == sandbox/* ]]; then
+    echo ""
+    echo "Rename branch after understanding the task:"
+    echo "  sandbox rename $name feature/${name}-description-here"
+  fi
   echo ""
   echo "To enter:  cd $worktree_path"
 
@@ -264,6 +271,38 @@ cmd_launch() {
   fi
 }
 
+cmd_rename() {
+  init_repo
+  local name="${1:-}"
+  local new_branch="${2:-}"
+
+  if [[ -z "$name" || -z "$new_branch" ]]; then
+    echo "Error: sandbox name and new branch name required" >&2
+    echo "Usage: sandbox rename <name> <new-branch>" >&2
+    echo "Example: sandbox rename PROJ-1234 feature/PROJ-1234-add-widget-support" >&2
+    exit 1
+  fi
+
+  local worktree_path="$WORKTREES_DIR/$name"
+  if [[ ! -d "$worktree_path" ]]; then
+    echo "Error: sandbox '$name' not found." >&2
+    exit 1
+  fi
+
+  # Get current branch
+  local current_branch
+  current_branch="$(git -C "$worktree_path" rev-parse --abbrev-ref HEAD)"
+
+  if [[ "$current_branch" == "$new_branch" ]]; then
+    echo "Branch is already named '$new_branch'."
+    return
+  fi
+
+  # Rename the branch
+  git -C "$worktree_path" branch -m "$current_branch" "$new_branch"
+  echo "Branch renamed: $current_branch → $new_branch"
+}
+
 cmd_list() {
   init_repo
   if [[ ! -d "$WORKTREES_DIR" ]]; then
@@ -336,7 +375,7 @@ cmd_rm() {
 
   if git -C "$REPO_ROOT" worktree remove --force "$worktree_path"; then
     echo "Sandbox '$name' removed."
-    echo "Note: branch may still exist. To delete: git branch -d feature/${name}-sandbox"
+    echo "Note: branch may still exist. To delete: git branch -D <branch-name>"
   else
     echo "Error: could not remove worktree. Use 'sandbox rm $name --force' to override." >&2
     exit 1
@@ -365,6 +404,7 @@ case "${1:-}" in
   -h|--help|help|"") usage ;;
   create) shift; cmd_create "$@" ;;
   launch) shift; cmd_launch "$@" ;;
+  rename) shift; cmd_rename "$@" ;;
   list)   cmd_list ;;
   rm)     shift; cmd_rm "$@" ;;
   cd)     shift; cmd_cd "$@" ;;
