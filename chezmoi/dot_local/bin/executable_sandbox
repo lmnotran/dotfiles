@@ -168,7 +168,7 @@ cmd_create() {
 
   # Launch agent if requested
   if [[ -n "$agent" ]]; then
-    launch_agent "$worktree_path" "$agent" "${agent_args[@]}"
+    launch_agent "$worktree_path" "$agent" ${agent_args[@]+"${agent_args[@]}"}
   fi
 }
 
@@ -180,7 +180,7 @@ launch_agent() {
 
   echo "Launching '$agent' in $worktree_path..."
   cd "$worktree_path"
-  exec "$agent" "${agent_args[@]}"
+  exec "$agent" ${agent_args[@]+"${agent_args[@]}"}
 }
 
 cmd_launch() {
@@ -216,7 +216,7 @@ cmd_launch() {
     exit 1
   fi
 
-  launch_agent "$worktree_path" "$agent" "${agent_args[@]}"
+  launch_agent "$worktree_path" "$agent" ${agent_args[@]+"${agent_args[@]}"}
 }
 
 cmd_list() {
