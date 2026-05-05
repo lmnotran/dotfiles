@@ -5,14 +5,19 @@
             "complex_modifications": {
                 "rules": [
                     {
-                        "description": "Caps Lock → F13 (used as leader/prefix in nvim and tmux)",
+                        "description": "Caps Lock → Ctrl+Space (tmux prefix) + F13 (nvim leader)",
                         "manipulators": [
                             {
                                 "from": {
                                     "key_code": "caps_lock",
                                     "modifiers": { "optional": ["any"] }
                                 },
-                                "to": [{ "key_code": "f13" }],
+                                "to": [
+                                    {
+                                        "key_code": "spacebar",
+                                        "modifiers": ["left_control"]
+                                    }
+                                ],
                                 "type": "basic"
                             }
                         ]
