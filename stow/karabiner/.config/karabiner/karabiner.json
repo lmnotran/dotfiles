@@ -5,19 +5,17 @@
             "complex_modifications": {
                 "rules": [
                     {
-                        "description": "Caps Lock → Ctrl+Space (tmux prefix) + F13 (nvim leader)",
+                        "description": "Caps Lock → Ctrl+Space (tmux prefix + nvim leader)",
                         "manipulators": [
                             {
                                 "from": {
                                     "key_code": "caps_lock",
                                     "modifiers": { "optional": ["any"] }
                                 },
-                                "to": [
-                                    {
-                                        "key_code": "spacebar",
-                                        "modifiers": ["left_control"]
-                                    }
-                                ],
+                                "to": [{
+                                    "key_code": "spacebar",
+                                    "modifiers": ["left_control"]
+                                }],
                                 "type": "basic"
                             }
                         ]
@@ -40,10 +38,6 @@
                         {
                             "from": { "key_code": "left_option" },
                             "to": [{ "key_code": "left_command" }]
-                        },
-                        {
-                            "from": { "key_code": "f24" },
-                            "to": [{ "key_code": "vk_none" }]
                         }
                     ]
                 }
