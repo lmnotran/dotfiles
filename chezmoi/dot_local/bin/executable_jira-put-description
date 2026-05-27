@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""jira-put-description — set a Jira issue's description from an ADF file.
+
+Usage:
+    jira-put-description <KEY> <file.json>
+    jira-put-description <KEY> -      # read ADF from stdin
+
+The file (or stdin) must be a valid ADF document — top-level
+`{"type": "doc", "version": 1, "content": [...]}`. The script validates
+JSON locally, then PUTs `{"fields": {"description": <doc>}}` to
+`/rest/api/3/issue/<KEY>`. Returns 204 on success; prints the response on
+non-204.
+
+Auth via ~/.netrc (`machine cpl-legogroup.atlassian.net`).
+"""
+import json
+import subprocess
+import sys
+import tempfile
+
+BASE = "https://cpl-legogroup.atlassian.net"
+
+
+def main():
+    if len(sys.argv) != 3:
+        sys.exit(__doc__)
+    key, path = sys.argv[1], sys.argv[2]
+
+    raw = sys.stdin.read() if path == "-" else open(path).read()
+    try:
+        doc = json.loads(raw)
+    except json.JSONDecodeError as e:
+        sys.exit(f"input is not valid JSON: {e}")
+
+    if not (isinstance(doc, dict) and doc.get("type") == "doc"):
+        sys.exit("input is not an ADF document (top-level must be {'type': 'doc', ...})")
+
+    payload = {"fields": {"description": doc}}
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tf:
+        json.dump(payload, tf)
+        body_path = tf.name
+
+    out = subprocess.run(
+        [
+            "curl", "-n", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+            "-X", "PUT",
+            "-H", "Content-Type: application/json",
+            "-H", "Accept: application/json",
+            "--data-binary", f"@{body_path}",
+            f"{BASE}/rest/api/3/issue/{key}",
+        ],
+        capture_output=True, text=True,
+    )
+    code = out.stdout.strip()
+    if code == "204":
+        print(f"204  {BASE}/browse/{key}")
+        return
+    err = subprocess.run(
+        [
+            "curl", "-n", "-s",
+            "-X", "PUT",
+            "-H", "Content-Type: application/json",
+            "-H", "Accept: application/json",
+            "--data-binary", f"@{body_path}",
+            f"{BASE}/rest/api/3/issue/{key}",
+        ],
+        capture_output=True, text=True,
+    )
+    sys.exit(f"HTTP {code}\n{err.stdout}")
+
+
+if __name__ == "__main__":
+    main()

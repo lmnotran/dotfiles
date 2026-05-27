@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""gh-pr-body — read / edit a PR body, optionally by section.
+
+Usage:
+    gh-pr-body <num>                          # dump full body to stdout
+    gh-pr-body <num> --section "## Test plan" # dump just that section
+    gh-pr-body <num> --edit-file body.md      # replace whole body from file
+    gh-pr-body <num> --section "## Test plan" --edit-file plan.md
+                                              # replace just that section
+    gh-pr-body <num> -                        # read replacement body from stdin
+    gh-pr-body <num> --section "## X" -
+
+Section semantics:
+- A "section" starts at a markdown heading line that matches --section
+  exactly (e.g. "## Test plan") and ends at the next heading of the same
+  or shallower depth, or EOF.
+- On replace, the new content overwrites the section *contents* but the
+  heading line itself is preserved (unless the replacement begins with a
+  heading line, in which case it's used as-is).
+- The PR body's trailing Jira reference-link footer
+  ([P11F-XXXX]: https://...?atlOrigin=...) is preserved across edits.
+
+PRs are looked up via `gh pr view <num> --json body`; edits go through
+`gh pr edit <num> -F <tmpfile>`.
+"""
+import argparse
+import json
+import re
+import subprocess
+import sys
+import tempfile
+
+
+def fetch_body(num):
+    out = subprocess.check_output(
+        ["gh", "pr", "view", str(num), "--json", "body", "--jq", ".body"],
+        text=True,
+    )
+    return out.rstrip("\n")
+
+
+def push_body(num, body):
+    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as tf:
+        tf.write(body)
+        path = tf.name
+    subprocess.check_call(["gh", "pr", "edit", str(num), "-F", path])
+
+
+def heading_depth(line):
+    m = re.match(r"^(#{1,6})\s", line)
+    return len(m.group(1)) if m else None
+
+
+def find_section(body, heading):
+    lines = body.splitlines()
+    start = None
+    target_depth = None
+    for i, line in enumerate(lines):
+        if line.rstrip() == heading.rstrip():
+            start = i
+            target_depth = heading_depth(line)
+            break
+    if start is None:
+        sys.exit(f"section not found: {heading!r}")
+    end = len(lines)
+    for j in range(start + 1, len(lines)):
+        d = heading_depth(lines[j])
+        if d is not None and d <= target_depth:
+            end = j
+            break
+    return start, end, lines
+
+
+def extract_section(body, heading):
+    start, end, lines = find_section(body, heading)
+    return "\n".join(lines[start:end]).rstrip() + "\n"
+
+
+def replace_section(body, heading, new_content):
+    start, end, lines = find_section(body, heading)
+    new_lines = new_content.splitlines()
+    if new_lines and heading_depth(new_lines[0]) is not None:
+        replacement = new_lines
+    else:
+        replacement = [lines[start]] + new_lines
+    out = lines[:start] + replacement + lines[end:]
+    return "\n".join(out).rstrip() + "\n"
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description=__doc__.split("\n\n", 1)[0],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument("num", type=int, help="PR number")
+    ap.add_argument("--section", help="Section heading line, e.g. '## Test plan'")
+    ap.add_argument("--edit-file", metavar="PATH",
+                    help="Replace body (or section) from this file; '-' for stdin")
+    ap.add_argument("edit_stdin", nargs="?", default=None,
+                    help="Use '-' as positional to read replacement from stdin")
+    args = ap.parse_args()
+
+    edit_source = args.edit_file or args.edit_stdin
+    body = fetch_body(args.num)
+
+    if not edit_source:
+        if args.section:
+            print(extract_section(body, args.section), end="")
+        else:
+            print(body)
+        return
+
+    new_text = sys.stdin.read() if edit_source == "-" else open(edit_source).read()
+    if args.section:
+        new_body = replace_section(body, args.section, new_text)
+    else:
+        new_body = new_text if new_text.endswith("\n") else new_text + "\n"
+
+    push_body(args.num, new_body)
+    print(f"updated PR #{args.num}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

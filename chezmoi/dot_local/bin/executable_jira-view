@@ -1,0 +1,200 @@
+#!/usr/bin/env python3
+"""jira-view — fetch a Jira issue's key fields in one shot.
+
+Usage:
+    jira-view <KEY> [--fields F1,F2,...] [--json] [--description-raw]
+
+Default output (compact, one block per field):
+    KEY      summary
+    Status:  In Progress
+    Type:    Task          Parent: <key>  Assignee: <name>
+    Created: <date>        Updated: <date>
+    Links:   <inward/outward links>
+    PRs:     <remote web links>
+
+    <description rendered as plain text from ADF>
+
+Flags:
+    --fields  comma-separated subset of: summary, status, type, parent,
+              assignee, created, updated, links, prs, description
+    --json    raw issue JSON straight from /rest/api/3/issue/<KEY>
+    --description-raw  emit description as raw ADF JSON (suitable for piping
+                       to jira-put-description after edit)
+
+Auth via ~/.netrc (`machine cpl-legogroup.atlassian.net`); uses `curl -n`.
+"""
+import argparse
+import json
+import subprocess
+import sys
+
+BASE = "https://cpl-legogroup.atlassian.net"
+DEFAULT_FIELDS = ["summary", "status", "type", "parent", "assignee",
+                  "created", "updated", "links", "prs", "description"]
+
+
+def curl_json(path):
+    out = subprocess.check_output(
+        ["curl", "-n", "-s", "-H", "Accept: application/json", f"{BASE}{path}"],
+        text=True,
+    )
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError:
+        sys.exit(f"non-JSON response from {path}:\n{out[:400]}")
+
+
+def render_adf(doc):
+    if not isinstance(doc, dict):
+        return ""
+    parts = []
+    def walk(node, depth=0, list_marker=None):
+        t = node.get("type")
+        if t == "doc":
+            for c in node.get("content", []):
+                walk(c, depth)
+        elif t == "heading":
+            level = node.get("attrs", {}).get("level", 1)
+            text = inline(node.get("content", []))
+            parts.append(f"\n{'#' * level} {text}\n")
+        elif t == "paragraph":
+            text = inline(node.get("content", []))
+            parts.append(("  " * depth) + text + "\n")
+        elif t == "bulletList":
+            for li in node.get("content", []):
+                walk(li, depth, list_marker="-")
+        elif t == "orderedList":
+            for i, li in enumerate(node.get("content", []), 1):
+                walk(li, depth, list_marker=f"{i}.")
+        elif t == "listItem":
+            prefix = ("  " * depth) + (list_marker or "-") + " "
+            for j, c in enumerate(node.get("content", [])):
+                if j == 0 and c.get("type") == "paragraph":
+                    parts.append(prefix + inline(c.get("content", [])) + "\n")
+                else:
+                    walk(c, depth + 1)
+        elif t == "codeBlock":
+            lang = node.get("attrs", {}).get("language", "")
+            text = inline(node.get("content", []))
+            parts.append(f"```{lang}\n{text}\n```\n")
+        elif t == "rule":
+            parts.append("---\n")
+        elif t == "blockquote":
+            for c in node.get("content", []):
+                parts.append("> " + inline(c.get("content", [])) + "\n")
+        else:
+            text = inline(node.get("content", []))
+            if text:
+                parts.append(text + "\n")
+    def inline(nodes):
+        out = []
+        for n in nodes or []:
+            if n.get("type") == "text":
+                text = n.get("text", "")
+                for mark in n.get("marks", []) or []:
+                    if mark["type"] == "code":
+                        text = f"`{text}`"
+                    elif mark["type"] == "strong":
+                        text = f"**{text}**"
+                    elif mark["type"] == "em":
+                        text = f"*{text}*"
+                    elif mark["type"] == "link":
+                        href = mark.get("attrs", {}).get("href", "")
+                        text = f"[{text}]({href})"
+                out.append(text)
+            elif n.get("type") == "hardBreak":
+                out.append("\n")
+            elif n.get("type") == "mention":
+                out.append(f"@{n.get('attrs', {}).get('text', '?')}")
+            elif n.get("type") == "inlineCard":
+                out.append(n.get("attrs", {}).get("url", "[inlineCard]"))
+            else:
+                out.append(inline(n.get("content", [])))
+        return "".join(out)
+    walk(doc)
+    return "".join(parts).rstrip() + "\n"
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description=__doc__.split("\n\n", 1)[0],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument("key", help="Jira key, e.g. P11F-8060")
+    ap.add_argument("--fields", help="Comma-separated subset of: " + ",".join(DEFAULT_FIELDS))
+    ap.add_argument("--json", action="store_true", help="Print raw issue JSON and exit")
+    ap.add_argument("--description-raw", action="store_true",
+                    help="Print description as raw ADF JSON (for piping to jira-put-description)")
+    args = ap.parse_args()
+
+    issue = curl_json(f"/rest/api/3/issue/{args.key}")
+    if "errorMessages" in issue:
+        sys.exit("\n".join(issue["errorMessages"]))
+
+    if args.json:
+        json.dump(issue, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return
+
+    if args.description_raw:
+        json.dump(issue["fields"].get("description"), sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return
+
+    fields_to_show = args.fields.split(",") if args.fields else DEFAULT_FIELDS
+    f = issue["fields"]
+
+    if "summary" in fields_to_show:
+        print(f"{args.key}  {f.get('summary', '?')}")
+        print(f"{BASE}/browse/{args.key}")
+    if "status" in fields_to_show:
+        print(f"Status:   {f.get('status', {}).get('name', '?')}")
+    line2 = []
+    if "type" in fields_to_show:
+        line2.append(f"Type: {f.get('issuetype', {}).get('name', '?')}")
+    if "parent" in fields_to_show and f.get("parent"):
+        p = f["parent"]
+        line2.append(f"Parent: {p['key']} ({p['fields']['summary']})")
+    if "assignee" in fields_to_show:
+        a = f.get("assignee") or {}
+        line2.append(f"Assignee: {a.get('displayName', '(unassigned)')}")
+    if line2:
+        print("  ".join(line2))
+    line3 = []
+    if "created" in fields_to_show:
+        line3.append(f"Created: {f.get('created', '?')[:10]}")
+    if "updated" in fields_to_show:
+        line3.append(f"Updated: {f.get('updated', '?')[:10]}")
+    if line3:
+        print("  ".join(line3))
+
+    if "links" in fields_to_show:
+        links = f.get("issuelinks", []) or []
+        if links:
+            print("Links:")
+            for lk in links:
+                if "outwardIssue" in lk:
+                    other = lk["outwardIssue"]
+                    rel = lk["type"]["outward"]
+                else:
+                    other = lk["inwardIssue"]
+                    rel = lk["type"]["inward"]
+                print(f"  {rel} {other['key']}: {other['fields']['summary']}")
+
+    if "prs" in fields_to_show:
+        rl = curl_json(f"/rest/api/3/issue/{args.key}/remotelink")
+        if isinstance(rl, list) and rl:
+            print("Remote links:")
+            for r in rl:
+                obj = r.get("object", {})
+                print(f"  {obj.get('title', '?')} — {obj.get('url', '')}")
+
+    if "description" in fields_to_show:
+        desc = f.get("description")
+        if desc:
+            print()
+            print(render_adf(desc))
+
+
+if __name__ == "__main__":
+    main()
