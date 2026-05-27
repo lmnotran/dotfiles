@@ -1,0 +1,271 @@
+#!/usr/bin/env python3
+"""ci-sample — collect CI timing samples by pushing empty trigger commits.
+
+Usage:
+    ci-sample <N> --workflow <ID-or-NAME> [--ticket TICKET] [--message MSG]
+                                          [--out DIR] [--no-wait-runs]
+    ci-sample --cleanup [--dry-run]
+    ci-sample --summary <samples-dir>
+
+What it does (collect mode):
+- Pushes N empty trigger commits one at a time (per CLAUDE.md sampling rule —
+  concurrency: cancel-in-progress would kill in-flight runs of the same
+  workflow if pushed back-to-back).
+- For each push, waits for the named workflow's run on the new HEAD SHA to
+  complete (status=completed), then pulls per-job timings via
+  `gh api .../jobs --paginate`.
+- Saves raw timings to <out>/<branch>/<ts>/sample-<n>.json.
+- At the end, prints a median (min-max) summary per job across all samples.
+
+Cleanup mode:
+- Scans back from HEAD for commits starting with "TEST: trigger CI sample",
+  resets soft to the first non-matching commit, amends with --no-edit
+  --no-gpg-sign, and `git push --force-with-lease`. Aborts if HEAD is master
+  or detached.
+
+Repo is inferred from `gh` / git context. Run inside a clone of the repo
+whose workflow you want to sample.
+"""
+import argparse
+import json
+import os
+import statistics
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+TRIGGER_MSG_PREFIX = "TEST: trigger CI sample"
+
+
+def run(cmd, **kw):
+    return subprocess.check_output(cmd, text=True, **kw).strip()
+
+
+def gh_api(path, **kw):
+    return run(["gh", "api", path], **kw)
+
+
+def current_branch():
+    br = run(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+    if br in ("HEAD", "master", "main"):
+        sys.exit(f"refusing to operate on '{br}' — checkout a feature branch first")
+    return br
+
+
+def head_sha():
+    return run(["git", "rev-parse", "HEAD"])
+
+
+def resolve_workflow(arg):
+    if arg.isdigit():
+        return int(arg)
+    out = json.loads(gh_api("repos/{owner}/{repo}/actions/workflows?per_page=100"))
+    matches = [w for w in out["workflows"] if w["name"] == arg or w["path"].endswith(arg)]
+    if not matches:
+        sys.exit(f"workflow '{arg}' not found (try numeric id from `gh workflow list`)")
+    if len(matches) > 1:
+        names = ", ".join(f"{w['id']}={w['name']}" for w in matches)
+        sys.exit(f"workflow '{arg}' is ambiguous: {names}")
+    return matches[0]["id"]
+
+
+def find_run_for_sha(workflow_id, branch, sha, timeout=180):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        out = json.loads(gh_api(
+            f"repos/{{owner}}/{{repo}}/actions/workflows/{workflow_id}/runs"
+            f"?branch={branch}&per_page=5"
+        ))
+        for r in out["workflow_runs"]:
+            if r["head_sha"] == sha:
+                return r["id"]
+        time.sleep(5)
+    sys.exit(f"timed out waiting for workflow {workflow_id} run on {sha[:8]}")
+
+
+def wait_for_run(run_id, interval=20, timeout_min=90):
+    deadline = time.time() + timeout_min * 60
+    last_status = None
+    while time.time() < deadline:
+        info = json.loads(gh_api(
+            f"repos/{{owner}}/{{repo}}/actions/runs/{run_id}",
+            input=None,
+        ))
+        status = info.get("status")
+        if status != last_status:
+            print(f"  run {run_id}: {status}", file=sys.stderr)
+            last_status = status
+        if status == "completed":
+            return info.get("conclusion")
+        time.sleep(interval)
+    sys.exit(f"timed out waiting for run {run_id} after {timeout_min} min")
+
+
+def fetch_jobs(run_id):
+    out = run([
+        "gh", "api",
+        f"repos/{{owner}}/{{repo}}/actions/runs/{run_id}/jobs",
+        "--paginate", "--jq", ".jobs[]"
+    ])
+    return [json.loads(line) for line in out.splitlines() if line.strip()]
+
+
+def parse_ts(s):
+    if not s:
+        return None
+    return datetime.fromisoformat(s.replace("Z", "+00:00"))
+
+
+def job_summary(j):
+    started = parse_ts(j.get("started_at"))
+    completed = parse_ts(j.get("completed_at"))
+    return {
+        "id": j["id"],
+        "name": j["name"],
+        "status": j.get("conclusion") or j.get("status"),
+        "started_at": j.get("started_at"),
+        "completed_at": j.get("completed_at"),
+        "queue_seconds": (started - parse_ts(j["created_at"])).total_seconds()
+            if (started and j.get("created_at")) else None,
+        "run_seconds": (completed - started).total_seconds()
+            if (started and completed) else None,
+    }
+
+
+def push_empty(message):
+    subprocess.check_call(["git", "commit", "--allow-empty", "--no-gpg-sign", "-m", message])
+    subprocess.check_call(["git", "push"])
+
+
+def cmd_collect(args):
+    branch = current_branch()
+    workflow_id = resolve_workflow(args.workflow)
+    out_root = Path(args.out).expanduser() / branch / datetime.now().strftime("%Y%m%d-%H%M%S")
+    out_root.mkdir(parents=True, exist_ok=True)
+    print(f"sampling workflow {workflow_id} on {branch}, saving to {out_root}", file=sys.stderr)
+
+    samples = []
+    for i in range(1, args.N + 1):
+        ticket = f" ({args.ticket})" if args.ticket else ""
+        msg = args.message or f"{TRIGGER_MSG_PREFIX} {i}/{args.N}{ticket}"
+        print(f"\n=== sample {i}/{args.N}: pushing '{msg}' ===", file=sys.stderr)
+        push_empty(msg)
+        sha = head_sha()
+        run_id = find_run_for_sha(workflow_id, branch, sha)
+        print(f"  found run {run_id} for {sha[:8]}", file=sys.stderr)
+        conclusion = wait_for_run(run_id)
+        print(f"  conclusion: {conclusion}", file=sys.stderr)
+        jobs = fetch_jobs(run_id)
+        sample = {
+            "sample_index": i,
+            "branch": branch,
+            "head_sha": sha,
+            "workflow_id": workflow_id,
+            "run_id": run_id,
+            "conclusion": conclusion,
+            "jobs": [job_summary(j) for j in jobs],
+        }
+        path = out_root / f"sample-{i}.json"
+        path.write_text(json.dumps(sample, indent=2))
+        samples.append(sample)
+        print(f"  saved {path}", file=sys.stderr)
+
+    print(f"\n=== summary across {len(samples)} samples ===")
+    print_summary(samples)
+    print(f"\nremember to clean up trigger commits: ci-sample --cleanup")
+
+
+def print_summary(samples):
+    by_name = {}
+    for s in samples:
+        for j in s["jobs"]:
+            by_name.setdefault(j["name"], []).append(j["run_seconds"])
+    name_w = min(max(len(n) for n in by_name), 60)
+    print(f"{'JOB':<{name_w}}  {'N':>3}  {'MEDIAN':>8}  {'MIN':>7}  {'MAX':>7}")
+    rows = []
+    for name, vals in by_name.items():
+        vs = [v for v in vals if v is not None]
+        if not vs:
+            continue
+        rows.append((name, len(vs), statistics.median(vs), min(vs), max(vs)))
+    rows.sort(key=lambda r: -r[2])
+    for name, n, med, lo, hi in rows:
+        print(f"{name[:name_w]:<{name_w}}  {n:>3}  {fmt(med):>8}  {fmt(lo):>7}  {fmt(hi):>7}")
+
+
+def fmt(seconds):
+    s = int(round(seconds))
+    if s < 60:
+        return f"{s}s"
+    m, s = divmod(s, 60)
+    return f"{m}m{s:02d}s"
+
+
+def cmd_cleanup(args):
+    branch = current_branch()
+    log = run(["git", "log", "--format=%H %s", "-50"]).splitlines()
+    target = None
+    for line in log:
+        sha, msg = line.split(" ", 1)
+        if not msg.startswith(TRIGGER_MSG_PREFIX):
+            target = sha
+            break
+    if target is None:
+        sys.exit(f"no non-trigger commit found in last 50 — refusing to reset")
+    if target == head_sha():
+        print("no trigger commits to clean up", file=sys.stderr)
+        return
+    n_trigger = next(i for i, line in enumerate(log) if line.startswith(target))
+    print(f"will reset {n_trigger} trigger commit(s), HEAD → {target[:8]}", file=sys.stderr)
+    if args.dry_run:
+        print("(dry-run; not executing)")
+        return
+    subprocess.check_call(["git", "reset", "--soft", target])
+    subprocess.check_call(["git", "commit", "--amend", "--no-edit", "--no-gpg-sign"])
+    subprocess.check_call(["git", "push", "--force-with-lease"])
+    print(f"cleaned up {n_trigger} trigger commit(s) on {branch}", file=sys.stderr)
+
+
+def cmd_summary(args):
+    d = Path(args.summary)
+    samples = []
+    for p in sorted(d.glob("sample-*.json")):
+        samples.append(json.loads(p.read_text()))
+    if not samples:
+        sys.exit(f"no sample-*.json files in {d}")
+    print(f"=== summary across {len(samples)} samples in {d} ===")
+    print_summary(samples)
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description=__doc__.split("\n\n", 1)[0],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub = ap.add_mutually_exclusive_group()
+    sub.add_argument("--cleanup", action="store_true",
+                     help="Undo TEST: trigger CI sample commits (reset-soft + amend + force-with-lease)")
+    sub.add_argument("--summary", metavar="DIR",
+                     help="Print summary from an existing samples directory")
+    ap.add_argument("N", nargs="?", type=int, help="Number of samples to collect")
+    ap.add_argument("--workflow", help="Workflow id or name (required for collect mode)")
+    ap.add_argument("--ticket", help="Ticket id appended to commit messages")
+    ap.add_argument("--message", help="Override commit message (default: 'TEST: trigger CI sample N/N')")
+    ap.add_argument("--out", default="~/.cache/ci-samples", help="Output root (default: ~/.cache/ci-samples)")
+    ap.add_argument("--dry-run", action="store_true", help="(cleanup only) print actions without running them")
+    args = ap.parse_args()
+
+    if args.cleanup:
+        return cmd_cleanup(args)
+    if args.summary:
+        return cmd_summary(args)
+    if args.N is None or args.workflow is None:
+        ap.error("collect mode requires N and --workflow")
+    cmd_collect(args)
+
+
+if __name__ == "__main__":
+    main()

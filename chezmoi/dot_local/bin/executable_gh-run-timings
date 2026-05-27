@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""gh-run-timings — per-job durations for a GitHub Actions workflow run.
+
+Usage:
+    gh-run-timings <run-id-or-url> [--pattern REGEX] [--sort KEY]
+                                   [--top N] [--steps] [--attempt N]
+                                   [--json]
+
+Prints a table of job name, queue (wait) time, run time, status, and
+end time. Pagination is handled automatically. Repo is inferred from
+`gh` context (run inside a clone, or set GH_REPO=owner/repo).
+
+Sort keys: start (default), end, duration, name.
+
+Examples:
+    gh-run-timings 12345678
+    gh-run-timings 12345678 --pattern bnsim --sort duration --top 5
+    gh-run-timings https://github.com/foo/bar/actions/runs/12345678 --steps
+    gh-run-timings 12345678 --attempt 2
+
+Footer prints workflow wall-clock (last completion - first start) so you
+can see what users wait for.
+"""
+import argparse
+import json
+import re
+import subprocess
+import sys
+from datetime import datetime, timezone
+
+
+def parse_ts(s):
+    if not s:
+        return None
+    return datetime.fromisoformat(s.replace("Z", "+00:00"))
+
+
+def fmt_duration(seconds):
+    if seconds is None:
+        return "-"
+    s = int(round(seconds))
+    if s < 60:
+        return f"{s}s"
+    m, s = divmod(s, 60)
+    if m < 60:
+        return f"{m}m{s:02d}s"
+    h, m = divmod(m, 60)
+    return f"{h}h{m:02d}m"
+
+
+def fmt_time(dt):
+    return dt.strftime("%H:%M:%S") if dt else "-"
+
+
+def parse_run_id(arg):
+    if "/" in arg:
+        m = re.search(r"/runs/(\d+)", arg)
+        if not m:
+            sys.exit(f"can't parse run id from: {arg}")
+        return m.group(1)
+    return arg
+
+
+def fetch_jobs(run_id, attempt=None):
+    repo = "repos/{owner}/{repo}"
+    if attempt is not None:
+        path = f"{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs"
+    else:
+        path = f"{repo}/actions/runs/{run_id}/jobs"
+    out = subprocess.check_output(
+        ["gh", "api", path, "--paginate", "--jq", ".jobs[]"], text=True
+    )
+    return [json.loads(line) for line in out.splitlines() if line.strip()]
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description=__doc__.split("\n\n", 1)[0],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument("run", help="Run id or URL")
+    ap.add_argument("--pattern", help="Regex filter on job name")
+    ap.add_argument(
+        "--sort",
+        choices=["start", "end", "duration", "name"],
+        default="start",
+    )
+    ap.add_argument("--top", type=int, help="Limit to top N rows after sort")
+    ap.add_argument("--steps", action="store_true", help="Print per-step rows under each job")
+    ap.add_argument("--attempt", type=int, help="Specific run attempt number")
+    ap.add_argument("--json", action="store_true", help="Emit JSON instead of a table")
+    args = ap.parse_args()
+
+    run_id = parse_run_id(args.run)
+    jobs = fetch_jobs(run_id, args.attempt)
+
+    rows = []
+    for j in jobs:
+        name = j["name"]
+        if args.pattern and not re.search(args.pattern, name):
+            continue
+        created = parse_ts(j.get("created_at"))
+        started = parse_ts(j.get("started_at"))
+        completed = parse_ts(j.get("completed_at"))
+        queue = (started - created).total_seconds() if (created and started) else None
+        run = (completed - started).total_seconds() if (started and completed) else None
+        rows.append(
+            {
+                "id": j.get("id"),
+                "name": name,
+                "queue": queue,
+                "run": run,
+                "status": j.get("conclusion") or j.get("status") or "?",
+                "started": started,
+                "completed": completed,
+                "url": j.get("html_url"),
+                "steps": j.get("steps", []),
+            }
+        )
+
+    inf = float("inf")
+    if args.sort == "duration":
+        rows.sort(key=lambda r: -(r["run"] or 0))
+    elif args.sort == "end":
+        rows.sort(key=lambda r: r["completed"].timestamp() if r["completed"] else inf)
+    elif args.sort == "name":
+        rows.sort(key=lambda r: r["name"])
+    else:
+        rows.sort(key=lambda r: r["started"].timestamp() if r["started"] else inf)
+
+    if args.top:
+        rows = rows[: args.top]
+
+    if not rows:
+        print("(no jobs matched)", file=sys.stderr)
+        sys.exit(1)
+
+    if args.json:
+        def jsonify(r):
+            return {
+                "id": r["id"],
+                "name": r["name"],
+                "queue_seconds": r["queue"],
+                "run_seconds": r["run"],
+                "status": r["status"],
+                "started_at": r["started"].isoformat() if r["started"] else None,
+                "completed_at": r["completed"].isoformat() if r["completed"] else None,
+                "url": r["url"],
+            }
+        json.dump([jsonify(r) for r in rows], sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return
+
+    name_w = min(max(len(r["name"]) for r in rows), 60)
+    print(f"{'JOB':<{name_w}}  {'QUEUE':>6}  {'RUN':>7}  {'STATUS':<10}  {'STARTED':<8}  {'ENDED':<8}")
+    for r in rows:
+        nm = r["name"][:name_w]
+        print(
+            f"{nm:<{name_w}}  {fmt_duration(r['queue']):>6}  {fmt_duration(r['run']):>7}  "
+            f"{r['status']:<10}  {fmt_time(r['started']):<8}  {fmt_time(r['completed']):<8}"
+        )
+        if args.steps:
+            for s in r["steps"]:
+                if s.get("conclusion") == "skipped":
+                    continue
+                s_start = parse_ts(s.get("started_at"))
+                s_end = parse_ts(s.get("completed_at"))
+                s_run = (s_end - s_start).total_seconds() if (s_start and s_end) else None
+                sn = s["name"][:55]
+                print(f"  step {s['number']:>2}. {sn:<55}  {fmt_duration(s_run):>7}  {s.get('conclusion', '?')}")
+
+    starts = [r["started"] for r in rows if r["started"]]
+    ends = [r["completed"] for r in rows if r["completed"]]
+    if starts and ends:
+        wall = (max(ends) - min(starts)).total_seconds()
+        print(f"\nwall-clock (first start → last end): {fmt_duration(wall)}  "
+              f"[{fmt_time(min(starts))} → {fmt_time(max(ends))}]")
+
+
+if __name__ == "__main__":
+    main()
