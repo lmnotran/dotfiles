@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""gh-step-anchor — emit a step-anchored GitHub Actions log URL.
+
+Usage: gh-step-anchor <job_id_or_url> <regex>
+
+Looks up the job via `gh api`, finds the first log line matching <regex>, pairs
+the API's per-step started_at with the log's ##[group]Run markers to determine
+which step contains the match, and prints the anchored URL:
+
+    https://github.com/<owner>/<repo>/actions/runs/<run>/job/<job>#step:<n>:<m>
+
+Why the marker pairing: the API's started_at/completed_at are second-precision,
+which can't disambiguate step boundaries (e.g. step N completes at 11:22:04Z
+and step N+1 starts at 11:22:04Z while a log line lands at 11:22:04.07Z). The
+log's ##[group]Run lines are unambiguous boundaries; pairing them to API steps
+in order gives a stable answer.
+
+Requires `gh` on PATH, repo inferred from `gh` context (run inside a clone, or
+set GH_REPO=owner/repo).
+"""
+import json
+import re
+import subprocess
+import sys
+from datetime import datetime, timedelta
+
+GROUP_RUN_RE = re.compile(r"##\[group\]Run\b")
+TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)")
+
+
+def gh(*args):
+    return subprocess.check_output(["gh", "api", *args], text=True)
+
+
+def parse_ts(s):
+    return datetime.fromisoformat(s.replace("Z", "+00:00"))
+
+
+def main():
+    if len(sys.argv) != 3:
+        sys.exit(__doc__)
+    arg, pattern = sys.argv[1], sys.argv[2]
+    job_id = arg.rsplit("/", 1)[-1] if "/" in arg else arg
+    repo = "repos/{owner}/{repo}"
+
+    job = json.loads(gh(f"{repo}/actions/jobs/{job_id}"))
+    steps = sorted(
+        [
+            s
+            for s in job["steps"]
+            if s.get("conclusion") != "skipped"
+            and s.get("started_at")
+            and s.get("completed_at")
+        ],
+        key=lambda s: s["number"],
+    )
+    log = gh(f"{repo}/actions/jobs/{job_id}/logs").splitlines()
+    pat = re.compile(pattern)
+
+    match_line = next((n for n, t in enumerate(log, 1) if pat.search(t)), None)
+    if match_line is None:
+        sys.exit(f"pattern not matched: {pattern}")
+
+    boundaries = []
+    last = 0
+    for step in steps:
+        start_dt = parse_ts(step["started_at"]) - timedelta(seconds=1)
+        for n in range(last + 1, len(log) + 1):
+            if not GROUP_RUN_RE.search(log[n - 1]):
+                continue
+            m = TS_RE.match(log[n - 1])
+            if m and parse_ts(m.group(1)) >= start_dt:
+                boundaries.append((step["number"], n))
+                last = n
+                break
+
+    chosen = None
+    for step_no, marker in boundaries:
+        if marker <= match_line:
+            chosen = (step_no, marker)
+        else:
+            break
+    if chosen is None:
+        sys.exit(f"no step marker precedes line {match_line}")
+
+    print(f"{job['html_url']}#step:{chosen[0]}:{match_line - chosen[1] + 1}")
+
+
+if __name__ == "__main__":
+    main()
