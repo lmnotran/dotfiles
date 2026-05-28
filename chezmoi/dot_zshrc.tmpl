@@ -114,5 +114,8 @@ export GO111MODULE=on
 source_if_exists "$HOME/.config/zsh/lego.zsh"
 {{- end }}
 
+# Claude Code: LEGO MPS env vars (synced via lmnotran/claude-config, stowed to ~/.claude/)
+source_if_exists "$HOME/.claude/mps-env.zsh"
+
 # Optional: local overrides outside of git
 source_if_exists "$HOME/.zshrc.local"
