@@ -1,4 +1,7 @@
-
+{{- $colimaSshConfig := joinPath .chezmoi.homeDir ".colima" "ssh_config" -}}
+{{- if stat $colimaSshConfig }}
+Include {{ $colimaSshConfig }}
+{{ end }}
 Host github-personal
     IdentityFile ~/.ssh/id_ed25519_personal
 
