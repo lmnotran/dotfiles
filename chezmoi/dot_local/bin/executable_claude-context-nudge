@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""Claude Code UserPromptSubmit hook: nudge when the session context grows large.
+
+Reads the hook JSON on stdin (session_id, transcript_path), finds the most recent
+assistant message's token usage, and computes the live context-window size for the
+*next* turn:
+
+    context = input_tokens + cache_read_input_tokens + cache_creation_input_tokens
+
+That sum is what gets re-sent (and re-billed as cache reads) on every subsequent
+turn, so it's the number that matters for the "sessions running long" cost concern.
+
+Emits a `systemMessage` (shown in the UI) once per 100k-token tier per session,
+starting at a threshold. State is kept per session under ~/.cache so a single long
+session doesn't nag every prompt.
+
+Tunables via env:
+  CLAUDE_CONTEXT_NUDGE_THRESHOLD  first tier to warn at, in tokens (default 200000)
+  CLAUDE_CONTEXT_NUDGE_STEP       tier width, in tokens (default 100000)
+  CLAUDE_CONTEXT_NUDGE_DISABLE    set to any value to disable
+"""
+import json
+import os
+import sys
+
+
+def main() -> int:
+    if os.environ.get("CLAUDE_CONTEXT_NUDGE_DISABLE"):
+        return 0
+
+    try:
+        threshold = int(os.environ.get("CLAUDE_CONTEXT_NUDGE_THRESHOLD", "200000"))
+        step = int(os.environ.get("CLAUDE_CONTEXT_NUDGE_STEP", "100000"))
+    except ValueError:
+        threshold, step = 200000, 100000
+    if step <= 0:
+        step = 100000
+
+    try:
+        payload = json.load(sys.stdin)
+    except Exception:
+        return 0
+
+    session_id = payload.get("session_id") or "unknown"
+    transcript = payload.get("transcript_path")
+    if not transcript or not os.path.isfile(transcript):
+        return 0
+
+    # Walk the transcript backwards for the most recent assistant usage block.
+    context = 0
+    try:
+        with open(transcript, encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except Exception:
+        return 0
+
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        msg = obj.get("message")
+        usage = msg.get("usage") if isinstance(msg, dict) else None
+        usage = usage or obj.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        context = (
+            (usage.get("input_tokens") or 0)
+            + (usage.get("cache_read_input_tokens") or 0)
+            + (usage.get("cache_creation_input_tokens") or 0)
+        )
+        if context:
+            break
+
+    if context < threshold:
+        return 0
+
+    # Tier = how many `step`s above threshold we've crossed (0-based).
+    tier = (context - threshold) // step
+
+    state_dir = os.path.join(
+        os.path.expanduser("~"), ".cache", "claude-context-nudge"
+    )
+    os.makedirs(state_dir, exist_ok=True)
+    state_file = os.path.join(state_dir, f"{session_id}.tier")
+
+    last_tier = -1
+    try:
+        with open(state_file) as fh:
+            last_tier = int(fh.read().strip())
+    except Exception:
+        last_tier = -1
+
+    if tier <= last_tier:
+        return 0  # already nudged at this tier (or higher) this session
+
+    try:
+        with open(state_file, "w") as fh:
+            fh.write(str(tier))
+    except Exception:
+        pass
+
+    k = round(context / 1000)
+    msg = (
+        f"⚠️  Context window is ~{k}k tokens and growing. Every turn re-sends "
+        f"this whole context (billed as cache reads). If you've moved on to a new "
+        f"task, consider /clear to reset."
+    )
+    print(json.dumps({"systemMessage": msg}))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
