@@ -48,6 +48,10 @@ eval "$("${BREW_PREFIX}"/bin/brew shellenv)"
 {{- end }}
 
 export PATH="$HOME/.local/bin:$PATH"
+
+# opencode
+[[ -d "$HOME/.opencode/bin" ]] && export PATH="$HOME/.opencode/bin:$PATH"
+
 export TERM="xterm-256color"
 
 # Custom completions
