@@ -22,6 +22,7 @@ _sandbox() {
   commands=(
     'create:Create a new sandbox (worktree + submodules)'
     'launch:Launch an agent CLI in an existing sandbox'
+    'swarm:Create + launch multiple agents in a tiled tmux grid'
     'rename:Rename sandbox branch'
     'list:List active sandboxes'
     'rm:Remove a sandbox'
@@ -47,6 +48,14 @@ _sandbox() {
       elif (( CURRENT == 4 )); then
         _sandbox_agents
       fi
+      ;;
+    swarm)
+      _arguments \
+        '*:name:_sandbox_names' \
+        '--agent[Agent to use]:agent:_sandbox_agents' \
+        '--layout[Tmux layout]:layout:(tiled even-horizontal even-vertical)' \
+        '--prompt[Prompt file pattern]:file:_files' \
+        '--session[Tmux session name]:session:'
       ;;
     rename)
       if (( CURRENT == 3 )); then
