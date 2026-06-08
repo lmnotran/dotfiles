@@ -41,6 +41,7 @@ Run from inside a git repo (or a worktree of one).
 Commands:
   create <name> [options]              Create a new sandbox (worktree + submodules)
   launch <name> [agent] [-- args...]   Launch an agent CLI in an existing sandbox
+  swarm <names...> [options]           Create + launch multiple agents in a tiled tmux grid
   rename <name> <new-branch>           Rename sandbox branch (e.g. feature/PROJ-1234-add-foo)
   list                                 List active sandboxes
   rm <name> [--force]                  Remove a sandbox
@@ -57,12 +58,22 @@ Options for 'launch':
   [agent]             Agent to launch (default: claude). Any command works.
   -- [args...]        Extra args passed to the agent
 
+Options for 'swarm':
+  <names...>          One or more sandbox names to create/reuse
+  --agent <agent>     Agent to use in all panes (default: claude)
+  --layout <layout>   Tmux layout: tiled (default), even-horizontal, even-vertical
+  --prompt <pattern>  Prompt file pattern; {} is replaced with sandbox name
+  --session <name>    Tmux session name (default: <repo>-swarm)
+  -- [args...]        Extra args passed to the agent in every pane
+
 Examples:
   sandbox create PROJ-1234
   sandbox create PROJ-1234 --agent claude
   sandbox create PROJ-1234 --agent copilot -- --model gpt-4
   sandbox launch PROJ-1234 opencode
   sandbox launch PROJ-1234 -- --resume
+  sandbox swarm task1 task2 task3
+  sandbox swarm task1 task2 task3 --prompt './handoff-{}.md' -- --dangerously-skip-permissions
   sandbox rename PROJ-1234 feature/PROJ-1234-add-widget-support
   cd \$(sandbox cd PROJ-1234)
   sandbox list
@@ -271,6 +282,89 @@ cmd_launch() {
   fi
 }
 
+cmd_swarm() {
+  init_repo
+  local agent="claude"
+  local layout="tiled"
+  local prompt_pattern=""
+  local session=""
+  local names=()
+  local agent_args=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --agent) agent="$2"; shift 2 ;;
+      --layout) layout="$2"; shift 2 ;;
+      --prompt) prompt_pattern="$2"; shift 2 ;;
+      --session) session="$2"; shift 2 ;;
+      --) shift; agent_args=("$@"); break ;;
+      -*) echo "Unknown option: $1" >&2; exit 1 ;;
+      *) names+=("$1"); shift ;;
+    esac
+  done
+
+  if [[ ${#names[@]} -eq 0 ]]; then
+    echo "Error: at least one sandbox name required" >&2
+    echo "Usage: sandbox swarm <name1> [name2 ...] [--prompt <pattern>] [-- agent-args...]" >&2
+    exit 1
+  fi
+
+  # Default session name
+  local repo_name
+  repo_name="$(basename "$REPO_ROOT")"
+  session="${session:-${repo_name}-swarm}"
+
+  # Kill existing swarm session if present
+  tmux kill-session -t "$session" 2>/dev/null || true
+
+  # Create sandboxes that don't exist yet
+  for name in "${names[@]}"; do
+    local worktree_path="$WORKTREES_DIR/$name"
+    if [[ ! -d "$worktree_path" ]]; then
+      cmd_create "$name"
+      echo ""
+    else
+      echo "Sandbox '$name' already exists, reusing."
+    fi
+  done
+
+  # Build tmux session with panes
+  local first=1
+  for name in "${names[@]}"; do
+    local worktree_path="$WORKTREES_DIR/$name"
+
+    # Build the command: cd into worktree, exec agent with args + optional prompt
+    local prompt_arg=""
+    if [[ -n "$prompt_pattern" ]]; then
+      local prompt_file="${prompt_pattern//\{\}/$name}"
+      if [[ -f "$prompt_file" ]]; then
+        # Resolve to absolute path for reliability
+        prompt_file="$(cd "$(dirname "$prompt_file")" && pwd)/$(basename "$prompt_file")"
+        prompt_arg=" \"\$(cat '$prompt_file')\""
+      fi
+    fi
+
+    local cmd="cd '$worktree_path' && exec $agent ${agent_args[*]+${agent_args[*]}}${prompt_arg}"
+
+    if [[ $first -eq 1 ]]; then
+      tmux new-session -d -s "$session" "$cmd"
+      first=0
+    else
+      tmux split-window -t "$session" "$cmd"
+      tmux select-layout -t "$session" "$layout"
+    fi
+  done
+
+  # Final layout pass
+  tmux select-layout -t "$session" "$layout"
+
+  echo "Swarm launched: ${#names[@]} agents in tmux session '$session'"
+  echo "  Attach: tmux attach -t $session"
+  echo "  Navigate: Ctrl-b + arrow keys"
+  echo ""
+  tmux attach -t "$session"
+}
+
 cmd_rename() {
   init_repo
   local name="${1:-}"
@@ -404,6 +498,7 @@ case "${1:-}" in
   -h|--help|help|"") usage ;;
   create) shift; cmd_create "$@" ;;
   launch) shift; cmd_launch "$@" ;;
+  swarm)  shift; cmd_swarm "$@" ;;
   rename) shift; cmd_rename "$@" ;;
   list)   cmd_list ;;
   rm)     shift; cmd_rm "$@" ;;
