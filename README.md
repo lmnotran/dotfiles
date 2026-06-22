@@ -108,7 +108,7 @@ Available profiles: `cloudflare`, `paperless`, `pihole`, `mariadb`, `aviationsta
 ./script/setup-keys
 ```
 
-Downloads SSH and GPG keys from Bitwarden vault attachments.
+Generates per-machine SSH and GPG keys locally and uploads the public keys to the matching GitHub account. Private keys never leave the machine.
 
 ### How It Works
 
@@ -120,7 +120,7 @@ Downloads SSH and GPG keys from Bitwarden vault attachments.
 
 | Script | Description |
 |--------|-------------|
-| `script/setup-keys` | Download SSH/GPG keys from Bitwarden |
+| `script/setup-keys` | Generate per-machine SSH/GPG keys and upload public keys to GitHub |
 | `script/load-secrets` | Load secrets from Bitwarden Secrets Manager |
 
 ## Devcontainer Setup
