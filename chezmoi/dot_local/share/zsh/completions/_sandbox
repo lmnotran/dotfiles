@@ -25,6 +25,7 @@ _sandbox() {
     'swarm:Create + launch multiple agents in a tiled tmux grid'
     'rename:Rename sandbox branch'
     'list:List active sandboxes'
+    'cleanup:Remove sandboxes whose Jira issue is resolved'
     'rm:Remove a sandbox'
     'cd:Print sandbox path'
   )
@@ -69,6 +70,9 @@ _sandbox() {
       ;;
     cd)
       _arguments '1:name:_sandbox_names'
+      ;;
+    cleanup)
+      _arguments '--yes[Skip confirmation prompts]'
       ;;
     list) ;;
   esac
