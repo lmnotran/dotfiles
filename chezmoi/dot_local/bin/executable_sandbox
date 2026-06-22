@@ -44,6 +44,7 @@ Commands:
   swarm <names...> [options]           Create + launch multiple agents in a tiled tmux grid
   rename <name> <new-branch>           Rename sandbox branch (e.g. feature/PROJ-1234-add-foo)
   list                                 List active sandboxes
+  cleanup [--yes]                      Remove sandboxes whose Jira issue is Done/Resolved/Closed
   rm <name> [--force]                  Remove a sandbox
   cd <name>                            Print sandbox path (use: cd \$(sandbox cd <name>))
 
@@ -77,6 +78,7 @@ Examples:
   sandbox rename PROJ-1234 feature/PROJ-1234-add-widget-support
   cd \$(sandbox cd PROJ-1234)
   sandbox list
+  sandbox cleanup
   sandbox rm PROJ-1234
 
 Config:
@@ -431,6 +433,158 @@ cmd_list() {
   fi
 }
 
+# Extract a Jira issue key (e.g. PROJ-1234) from a sandbox name or branch.
+# Case-insensitive match; emits the key uppercased. Always exits 0 (empty on no match)
+# so callers under `set -e` aren't killed by a non-match.
+extract_jira_key() {
+  local s="$1"
+  if [[ "$s" =~ ([A-Za-z][A-Za-z0-9]+-[0-9]+) ]]; then
+    echo "${BASH_REMATCH[1]}" | tr '[:lower:]' '[:upper:]'
+  fi
+  return 0
+}
+
+# Print the Jira status category key (e.g. "done", "indeterminate", "new")
+# and the human status name, separated by a tab. Empty on lookup failure.
+jira_status() {
+  local key="$1"
+  command -v jira-view &>/dev/null || return 1
+  jira-view "$key" --json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    f = json.load(sys.stdin)["fields"]["status"]
+    print(f.get("statusCategory", {}).get("key", "") + "\t" + f.get("name", "?"))
+except Exception:
+    pass
+'
+}
+
+cmd_cleanup() {
+  init_repo
+  local assume_yes=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --yes|-y) assume_yes=1; shift ;;
+      -*) echo "Unknown option: $1" >&2; exit 1 ;;
+      *) echo "Unknown argument: $1" >&2; exit 1 ;;
+    esac
+  done
+
+  if [[ ! -d "$WORKTREES_DIR" ]]; then
+    echo "No sandboxes found."
+    return
+  fi
+
+  # Collect sandbox name|path|branch tuples from the worktree list.
+  local -a sandboxes=()
+  local wt_path="" wt_name=""
+  while IFS= read -r line; do
+    if [[ "$line" == worktree\ * ]]; then
+      wt_path="${line#worktree }"
+      wt_name="$(basename "$wt_path")"
+    elif [[ "$line" == branch\ * ]]; then
+      if [[ "$wt_path" == "$WORKTREES_DIR"/* ]]; then
+        sandboxes+=("$wt_name|$wt_path|${line#branch refs/heads/}")
+      fi
+      wt_path=""
+    elif [[ -z "$line" ]]; then
+      if [[ -n "$wt_path" && "$wt_path" == "$WORKTREES_DIR"/* ]]; then
+        sandboxes+=("$wt_name|$wt_path|(detached)")
+      fi
+      wt_path=""
+    fi
+  done < <(git -C "$REPO_ROOT" worktree list --porcelain)
+
+  if [[ ${#sandboxes[@]} -eq 0 ]]; then
+    echo "No sandboxes found."
+    return
+  fi
+
+  local checked=0 removed=0
+  for entry in "${sandboxes[@]}"; do
+    local name="${entry%%|*}"
+    local rest="${entry#*|}"
+    local path="${rest%%|*}"
+    local branch="${rest#*|}"
+
+    local key
+    key="$(extract_jira_key "$name")"
+    if [[ -z "$key" ]]; then
+      key="$(extract_jira_key "$branch")"
+    fi
+    if [[ -z "$key" ]]; then
+      printf "%-20s no Jira key — skipping\n" "$name"
+      continue
+    fi
+
+    checked=1
+    local status_line cat status_name
+    status_line="$(jira_status "$key")" || true
+    cat="${status_line%%$'\t'*}"
+    status_name="${status_line#*$'\t'}"
+
+    if [[ -z "$status_line" ]]; then
+      printf "%-20s %s: lookup failed — skipping\n" "$name" "$key"
+      continue
+    fi
+
+    if [[ "$cat" != "done" ]]; then
+      printf "%-20s %s: %s — keeping\n" "$name" "$key" "$status_name"
+      continue
+    fi
+
+    # Issue is in a terminal category (Done/Resolved/Closed).
+    echo ""
+    echo "──────────────────────────────────────────────────────────────"
+    echo "Sandbox '$name' → $key is '$status_name' (resolved)."
+    echo "Branch: $branch"
+    echo "Path:   $path"
+    echo ""
+    echo "git status:"
+    git -C "$path" -c color.status=always status --short --branch 2>/dev/null | sed 's/^/  /' \
+      || echo "  (could not read git status)"
+    echo ""
+
+    local reply="y"
+    if [[ $assume_yes -eq 0 ]]; then
+      read -rp "Delete this sandbox? [y/N] " reply </dev/tty || reply="n"
+    fi
+    if [[ "$reply" =~ ^[Yy]$ ]]; then
+      local dirty
+      dirty="$(git -C "$path" status --porcelain --ignore-submodules=dirty 2>/dev/null | grep -v '^??' | head -1 || true)"
+      if [[ -n "$dirty" ]]; then
+        local force_reply
+        read -rp "  Sandbox has uncommitted changes. Force remove? [y/N] " force_reply </dev/tty || force_reply="n"
+        [[ "$force_reply" =~ ^[Yy]$ ]] || { echo "  Kept."; continue; }
+      fi
+      if git -C "$REPO_ROOT" worktree remove --force "$path"; then
+        removed=1
+        echo "  Removed sandbox '$name'."
+        if [[ "$branch" != "(detached)" ]]; then
+          local branch_reply
+          read -rp "  Also delete branch '$branch'? [y/N] " branch_reply </dev/tty || branch_reply="n"
+          if [[ "$branch_reply" =~ ^[Yy]$ ]]; then
+            git -C "$REPO_ROOT" branch -D "$branch" && echo "  Deleted branch '$branch'."
+          fi
+        fi
+      else
+        echo "  Error: could not remove worktree." >&2
+      fi
+    else
+      echo "  Kept."
+    fi
+  done
+
+  echo ""
+  if [[ $checked -eq 0 ]]; then
+    echo "No sandboxes with an associated Jira key."
+  elif [[ $removed -eq 0 ]]; then
+    echo "Cleanup complete — nothing removed."
+  else
+    echo "Cleanup complete."
+  fi
+}
+
 cmd_rm() {
   init_repo
   local name=""
@@ -501,6 +655,7 @@ case "${1:-}" in
   swarm)  shift; cmd_swarm "$@" ;;
   rename) shift; cmd_rename "$@" ;;
   list)   cmd_list ;;
+  cleanup) shift; cmd_cleanup "$@" ;;
   rm)     shift; cmd_rm "$@" ;;
   cd)     shift; cmd_cd "$@" ;;
   *) echo "Unknown command: $1" >&2; usage; exit 1 ;;
