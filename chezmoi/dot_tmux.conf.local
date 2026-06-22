@@ -5,6 +5,8 @@
 
 # -- general -------------------------------------------------------------------
 
+set -g mouse on
+
 # prefix
 set -gu prefix2
 unbind C-a
