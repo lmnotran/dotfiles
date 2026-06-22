@@ -2,12 +2,11 @@
 #
 # Sets up SSH and GPG keys for personal and work use.
 #
-# SSH keys are generated locally (per-machine) and uploaded to the appropriate
-# GitHub account via `gh ssh-key add`. The private key never leaves this
-# machine. GPG signing keys come from Bitwarden since signing identity is
-# typically shared across machines.
+# Both SSH and GPG keys are generated locally (per-machine) and the public key
+# is uploaded to the appropriate GitHub account via `gh ssh-key add` /
+# `gh gpg-key add`. Private keys never leave this machine.
 #
-# Requires: ssh-keygen, gh (for SSH upload); Bitwarden CLI (bw) + gpg for GPG.
+# Requires: ssh-keygen, gpg, gh.
 #
 # Usage: ./script/setup-keys [selection...]
 #   Selections: personal-ssh | work-ssh | personal-gpg | work-gpg | all
@@ -35,10 +34,10 @@ GH_WORK_ACCOUNT="mason-tran_lego"
 # Work GitHub organization (used for the SSO authorization link)
 WORK_ORG="LEGO-CPL"
 
-# Bitwarden items (GPG only — SSH keys are generated locally)
-GPG_PERSONAL_ITEM="GPG Key - Personal"
-GPG_WORK_ITEM="GPG Key - Work"
-GPG_ATTACHMENT="private.gpg"
+# GPG signing identity (used as the key's user ID; matches dot_gitconfig.tmpl)
+GPG_NAME="Mason Tran"
+GPG_PERSONAL_EMAIL="mason@Lmnotran.com"
+GPG_WORK_EMAIL="mason.tran@lego.com"
 
 # Track which SSH keys were generated so we can print SSO / manage links
 GENERATED_PERSONAL_SSH=0
@@ -51,52 +50,6 @@ info()    { echo -e "\033[1;34m==>\033[0m $1"; }
 success() { echo -e "\033[1;32m==>\033[0m $1"; }
 warn()    { echo -e "\033[1;33mWarning:\033[0m $1"; }
 error()   { echo -e "\033[1;31mError:\033[0m $1" >&2; }
-
-check_bw_installed() {
-    if ! command -v bw &> /dev/null; then
-        error "Bitwarden CLI (bw) is not installed."
-        echo "Install it from: https://bitwarden.com/help/cli/"
-        echo "  - macOS: brew install bitwarden-cli"
-        echo "  - Linux: snap install bw"
-        exit 1
-    fi
-}
-
-ensure_logged_in() {
-    local status
-    status=$(bw status | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
-
-    case "$status" in
-        "unauthenticated")
-            info "Please log in to Bitwarden..."
-            bw login
-            ;;
-        "locked")
-            info "Unlocking Bitwarden vault..."
-            ;;
-        "unlocked")
-            info "Bitwarden vault is already unlocked"
-            return 0
-            ;;
-    esac
-
-    if [ -z "${BW_SESSION:-}" ]; then
-        BW_SESSION=$(bw unlock --raw)
-        export BW_SESSION
-    fi
-}
-
-get_item_id() {
-    local item_name="$1"
-    local item_id
-
-    item_id=$(bw get item "$item_name" 2>/dev/null | jq -r '.id') || {
-        error "Could not find Bitwarden item: $item_name"
-        return 1
-    }
-
-    echo "$item_id"
-}
 
 # =============================================================================
 # Work machine detection
@@ -230,34 +183,105 @@ upload_ssh_to_gh() {
 }
 
 # =============================================================================
-# GPG Key Setup — still pulled from Bitwarden (shared signing identity)
+# GPG Key Setup — per-machine ed25519 signing key, uploaded to the matching
+# gh account. The private key never leaves this machine.
 # =============================================================================
-setup_gpg_keys() {
+generate_gpg_key() {
     local label="$1"
-    local item_name="$2"
+    local email="$2"
+    local gh_account="$3"
 
-    info "Setting up $label GPG keys..."
+    info "Setting up $label GPG key..."
 
-    local item_id
-    item_id=$(get_item_id "$item_name") || return 1
+    # Reuse an existing secret key for this identity if one is already present
+    local existing
+    existing=$(gpg --list-secret-keys --keyid-format LONG --with-colons "$email" 2>/dev/null \
+        | awk -F: '/^sec:/ {print $5; exit}')
 
-    local temp_gpg
-    temp_gpg=$(mktemp)
-    trap 'rm -f "$temp_gpg"' EXIT
-
-    info "Downloading $label GPG private key..."
-    bw get attachment "$GPG_ATTACHMENT" --itemid "$item_id" --output "$temp_gpg"
-
-    info "Importing $label GPG key..."
-    gpg --import "$temp_gpg"
-
-    rm -f "$temp_gpg"
-
-    success "$label GPG key imported successfully"
+    if [[ -n "$existing" ]]; then
+        info "$label GPG key already exists for <$email> ($existing) — skipping generation"
+    else
+        info "Generating ed25519 GPG key for $GPG_NAME <$email> (you'll be prompted for a passphrase)"
+        gpg --batch --gen-key <<EOF
+Key-Type: eddsa
+Key-Curve: ed25519
+Key-Usage: sign
+Name-Real: $GPG_NAME
+Name-Email: $email
+Expire-Date: 0
+%ask-passphrase
+%commit
+EOF
+        existing=$(gpg --list-secret-keys --keyid-format LONG --with-colons "$email" 2>/dev/null \
+            | awk -F: '/^sec:/ {print $5; exit}')
+        success "$label GPG key generated ($existing)"
+    fi
 
     echo ""
-    info "Imported GPG keys:"
-    gpg --list-secret-keys --keyid-format LONG
+    info "$label GPG key:"
+    gpg --list-secret-keys --keyid-format LONG "$email"
+    echo ""
+
+    upload_gpg_to_gh "$label" "$existing" "$gh_account"
+}
+
+upload_gpg_to_gh() {
+    local label="$1"
+    local key_id="$2"
+    local gh_account="$3"
+
+    if ! command -v gh &> /dev/null; then
+        warn "gh CLI not installed — skipping upload for $label."
+        echo "  Add manually at: https://github.com/settings/keys"
+        return 0
+    fi
+
+    if ! is_gh_account_logged_in "$gh_account"; then
+        warn "gh account '$gh_account' is not logged in — skipping upload for $label."
+        echo "  Run: gh auth login   (then re-run this script, or add the key manually)"
+        return 0
+    fi
+
+    local prev_active
+    prev_active=$(get_active_gh_account || true)
+
+    if [[ -n "$prev_active" && "$prev_active" != "$gh_account" ]]; then
+        gh auth switch --user "$gh_account" > /dev/null
+    fi
+
+    # Check if this key is already on GitHub by matching its key id
+    if gh gpg-key list 2>/dev/null | grep -q "$key_id"; then
+        info "$label key already present on $gh_account ($key_id)"
+        if [[ -n "$prev_active" && "$prev_active" != "$gh_account" ]]; then
+            gh auth switch --user "$prev_active" > /dev/null
+        fi
+        return 0
+    fi
+
+    info "Uploading $label public key ($key_id) to gh account '$gh_account'..."
+    local add_output
+    if add_output=$(gpg --armor --export "$key_id" | gh gpg-key add - 2>&1); then
+        success "Uploaded $label key to $gh_account"
+    elif echo "$add_output" | grep -q "admin:gpg_key"; then
+        warn "Token is missing the admin:gpg_key scope — requesting it now..."
+        if gh auth refresh -h github.com -s admin:gpg_key; then
+            info "Retrying upload..."
+            if gpg --armor --export "$key_id" | gh gpg-key add -; then
+                success "Uploaded $label key to $gh_account"
+            else
+                warn "Could not upload $label key to $gh_account (key may already be present)"
+            fi
+        else
+            warn "Could not refresh token — add the key manually at https://github.com/settings/keys"
+        fi
+    else
+        warn "Could not upload $label key to $gh_account (key may already be present)"
+        [[ -n "$add_output" ]] && echo "  $add_output"
+    fi
+
+    if [[ -n "$prev_active" && "$prev_active" != "$gh_account" ]]; then
+        gh auth switch --user "$prev_active" > /dev/null
+    fi
 }
 
 # =============================================================================
@@ -274,11 +298,11 @@ do_work_ssh() {
 }
 
 do_personal_gpg() {
-    setup_gpg_keys "personal" "$GPG_PERSONAL_ITEM"
+    generate_gpg_key "personal" "$GPG_PERSONAL_EMAIL" "$GH_PERSONAL_ACCOUNT"
 }
 
 do_work_gpg() {
-    setup_gpg_keys "work" "$GPG_WORK_ITEM"
+    generate_gpg_key "work" "$GPG_WORK_EMAIL" "$GH_WORK_ACCOUNT"
 }
 
 # =============================================================================
@@ -288,8 +312,8 @@ print_menu() {
     echo "Which keys would you like to set up? (comma-separated, e.g. 1,2)"
     echo "  1) Personal SSH key  (generate locally, upload to gh '$GH_PERSONAL_ACCOUNT')"
     echo "  2) LEGO/work SSH key (generate locally, upload to gh '$GH_WORK_ACCOUNT')"
-    echo "  3) Personal GPG key  (from Bitwarden item '$GPG_PERSONAL_ITEM')"
-    echo "  4) Work GPG key      (from Bitwarden item '$GPG_WORK_ITEM')"
+    echo "  3) Personal GPG key  (generate locally, upload to gh '$GH_PERSONAL_ACCOUNT')"
+    echo "  4) Work GPG key      (generate locally, upload to gh '$GH_WORK_ACCOUNT')"
     echo "  a) All of the above"
     echo "  q) Quit"
     echo ""
@@ -369,15 +393,6 @@ main() {
     if [[ "$chosen" == " " ]]; then
         error "No selections made."
         exit 1
-    fi
-
-    # Only initialize Bitwarden if a GPG step was selected
-    if [[ "$chosen" == *" personal-gpg "* || "$chosen" == *" work-gpg "* ]]; then
-        check_bw_installed
-        ensure_logged_in
-        info "Syncing Bitwarden vault..."
-        bw sync
-        echo ""
     fi
 
     # Execute selected steps in a deterministic order
