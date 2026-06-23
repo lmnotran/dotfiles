@@ -63,6 +63,11 @@ fpath=("$HOME/.local/share/zsh/completions" $fpath)
 COMPLETION_WAITING_DOTS="true"
 HIST_STAMPS="yyyy-mm-dd"
 
+# Keys the ssh-agent plugin loads at login. Names without a default suffix
+# (e.g. id_ed25519_work) are skipped unless listed here, which leaves dev
+# container SSH-agent forwarding without the work key.
+zstyle :omz:plugins:ssh-agent identities id_ed25519 id_ed25519_work
+
 #===============================================================================
 # antidote plugin manager
 #===============================================================================
