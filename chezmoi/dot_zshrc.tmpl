@@ -129,3 +129,12 @@ source_if_exists "$HOME/.claude/mps-env.zsh"
 
 # Optional: local overrides outside of git
 source_if_exists "$HOME/.zshrc.local"
+
+# bun
+[ -s "$HOME/.bun/_bun" ] && source "$HOME/.bun/_bun"
+export BUN_INSTALL="$HOME/.bun"
+export PATH="$BUN_INSTALL/bin:$PATH"
+
+# oh-my-openagent: disable anonymous telemetry
+export OMO_SEND_ANONYMOUS_TELEMETRY=0
+export OMO_DISABLE_POSTHOG=1
