@@ -60,6 +60,11 @@ bind -T copy-mode-vi C-v send-keys -X rectangle-toggle
 bind -T copy-mode-vi y send-keys -X copy-selection-and-cancel
 bind -T copy-mode-vi Escape send-keys -X cancel
 
+# forward OSC 52 clipboard escapes from apps (nvim, opencode) out to the local
+# terminal; tmux's default 'external' drops app-emitted escapes, which breaks
+# "copy to clipboard" over SSH where there is no local X/Wayland clipboard
+set -g set-clipboard on
+
 # -- user customizations -------------------------------------------------------
 
 bind R source-file ~/.tmux.conf \; display "Config reloaded"
