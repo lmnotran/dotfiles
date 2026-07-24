@@ -60,10 +60,14 @@ bind -T copy-mode-vi C-v send-keys -X rectangle-toggle
 bind -T copy-mode-vi y send-keys -X copy-selection-and-cancel
 bind -T copy-mode-vi Escape send-keys -X cancel
 
-# forward OSC 52 clipboard escapes from apps (nvim, opencode) out to the local
-# terminal; tmux's default 'external' drops app-emitted escapes, which breaks
-# "copy to clipboard" over SSH where there is no local X/Wayland clipboard
+# clipboard over SSH (no local X/Wayland): two escape paths must survive tmux.
+# set-clipboard on: forward raw OSC 52 from apps (e.g. nvim) and tmux's own
+# copy-mode yank out to the local terminal; default 'external' drops app OSC 52.
 set -g set-clipboard on
+# allow-passthrough on: opencode/opentui wraps its OSC 52 clipboard writes in
+# tmux's DCS passthrough (\ePtmux;...) when it detects tmux; without this tmux
+# discards them and mouse-select-to-copy in opencode never reaches the clipboard.
+set -g allow-passthrough on
 
 # -- user customizations -------------------------------------------------------
 
