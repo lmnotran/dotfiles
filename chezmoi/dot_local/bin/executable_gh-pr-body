@@ -13,12 +13,20 @@ Usage:
 Section semantics:
 - A "section" starts at a markdown heading line that matches --section
   exactly (e.g. "## Test plan") and ends at the next heading of the same
-  or shallower depth, or EOF.
+  or shallower depth, or the start of the trailing footer, or EOF.
 - On replace, the new content overwrites the section *contents* but the
   heading line itself is preserved (unless the replacement begins with a
   heading line, in which case it's used as-is).
-- The PR body's trailing Jira reference-link footer
-  ([P11F-XXXX]: https://...?atlOrigin=...) is preserved across edits.
+
+Footer handling:
+- The footer is the trailing run of blank lines, markdown link-reference
+  definitions ("[P11F-XXXX]: https://...?atlOrigin=...", auto-appended by
+  the GitHub <-> Jira integration to power smart-link unfurling), and the
+  standalone issue link P11 PR bodies carry at the bottom
+  ("[P11F-XXXX](https://...)").
+- It is split off before any section math and re-attached afterwards, so
+  editing the *last* section no longer swallows it. A replacement that
+  carries its own footer wins over the fetched one.
 
 PRs are looked up via `gh pr view <num> --json body`; edits go through
 `gh pr edit <num> -F <tmpfile>`.
@@ -49,6 +57,47 @@ def push_body(num, body):
 def heading_depth(line):
     m = re.match(r"^(#{1,6})\s", line)
     return len(m.group(1)) if m else None
+
+
+# Markdown link-reference definition, e.g. "[P11F-1234]: https://...?atlOrigin=..."
+_REF_DEF_RE = re.compile(r"^\[[^\]]+\]:\s*\S+")
+# Standalone issue link, e.g. "[P11F-1234](https://cpl-legogroup.atlassian.net/...)"
+_ISSUE_LINK_RE = re.compile(r"^\[[A-Z][A-Z0-9]*-\d+\]\(https?://\S+\)$")
+
+
+def is_footer_line(line):
+    s = line.strip()
+    return bool(_REF_DEF_RE.match(s) or _ISSUE_LINK_RE.match(s))
+
+
+def split_footer(body):
+    """Split the trailing Jira-link footer off a PR body.
+
+    Returns (body_without_footer, footer); footer is "" when the body has
+    none. Walks backwards over blank lines and footer lines, stopping at the
+    first line that is neither.
+    """
+    lines = body.splitlines()
+    cut = len(lines)
+    found = False
+    for i in range(len(lines) - 1, -1, -1):
+        if not lines[i].strip():
+            continue
+        if is_footer_line(lines[i]):
+            cut = i
+            found = True
+            continue
+        break
+    if not found:
+        return body, ""
+    return "\n".join(lines[:cut]).rstrip(), "\n".join(lines[cut:]).strip()
+
+
+def join_footer(body, footer):
+    body = body.rstrip()
+    if not footer:
+        return body + "\n"
+    return body + "\n\n" + footer.rstrip() + "\n"
 
 
 def find_section(body, heading):
@@ -82,7 +131,9 @@ def replace_section(body, heading, new_content):
     if new_lines and heading_depth(new_lines[0]) is not None:
         replacement = new_lines
     else:
-        replacement = [lines[start]] + new_lines
+        # Keep the blank line that separates a heading from its content.
+        pad = [] if (new_lines and not new_lines[0].strip()) else [""]
+        replacement = [lines[start]] + pad + new_lines
     out = lines[:start] + replacement + lines[end:]
     return "\n".join(out).rstrip() + "\n"
 
@@ -101,22 +152,27 @@ def main():
     args = ap.parse_args()
 
     edit_source = args.edit_file or args.edit_stdin
-    body = fetch_body(args.num)
+    full_body = fetch_body(args.num)
+    body, footer = split_footer(full_body)
 
     if not edit_source:
         if args.section:
             print(extract_section(body, args.section), end="")
         else:
-            print(body)
+            print(full_body)
         return
 
     new_text = sys.stdin.read() if edit_source == "-" else open(edit_source).read()
     if args.section:
         new_body = replace_section(body, args.section, new_text)
     else:
-        new_body = new_text if new_text.endswith("\n") else new_text + "\n"
+        new_body = new_text
 
-    push_body(args.num, new_body)
+    # A replacement carrying its own footer wins over the fetched one.
+    if split_footer(new_body)[1]:
+        footer = ""
+
+    push_body(args.num, join_footer(new_body, footer))
     print(f"updated PR #{args.num}", file=sys.stderr)
 
 
