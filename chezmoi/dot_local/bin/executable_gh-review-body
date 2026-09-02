@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""gh-review-body — read / edit the body of a pull-request review.
+
+Usage:
+    gh-review-body <pr>                        # list reviews on the PR
+    gh-review-body <pr> --mine                 # dump your latest review body
+    gh-review-body <pr> --review-id <id>       # dump that review's body
+    gh-review-body <pr> --edit-file body.md    # replace your latest review
+    gh-review-body <pr> --review-id <id> --edit-file body.md
+    gh-review-body <pr> -                      # read replacement from stdin
+
+`gh pr` exposes no wrapper for editing a submitted review, so writes go
+through PUT /repos/{owner}/{repo}/pulls/{pr}/reviews/{id}. Every write is
+re-fetched and compared against what was sent, so a no-op or partial push
+fails loudly instead of reporting success.
+
+Without --review-id an edit targets the most recent review you authored
+that has a body, which is the common "fix a typo in my own review" case.
+Top-level review bodies only; inline file comments live on a different
+endpoint and are not covered here.
+"""
+import argparse
+import difflib
+import json
+import subprocess
+import sys
+
+
+def sh(args, **kw):
+    return subprocess.check_output(["gh"] + args, text=True, **kw).strip()
+
+
+def repo_slug():
+    return sh(["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"])
+
+
+def current_login():
+    return sh(["api", "user", "--jq", ".login"])
+
+
+def load_json_stream(text):
+    """Parse one or more concatenated JSON values (what --paginate emits)."""
+    decoder = json.JSONDecoder()
+    items, idx, end = [], 0, len(text)
+    while idx < end:
+        while idx < end and text[idx].isspace():
+            idx += 1
+        if idx >= end:
+            break
+        value, idx = decoder.raw_decode(text, idx)
+        items.extend(value) if isinstance(value, list) else items.append(value)
+    return items
+
+
+def list_reviews(slug, pr):
+    return load_json_stream(
+        sh(["api", f"repos/{slug}/pulls/{pr}/reviews", "--paginate"])
+    )
+
+
+def pick_review(reviews, review_id, login):
+    if review_id is not None:
+        for review in reviews:
+            if review["id"] == review_id:
+                return review
+        sys.exit(f"review {review_id} not found on this PR")
+    mine = [r for r in reviews if r["user"]["login"] == login and r.get("body")]
+    if not mine:
+        sys.exit(f"no review by {login} with a body on this PR; pass --review-id")
+    return mine[-1]
+
+
+def normalize(body):
+    """Canonical form for comparing a pushed body against the live one.
+
+    GitHub returns bodies with CRLF line endings and may drop trailing
+    whitespace, so compare on LF with per-line right-trim.
+    """
+    text = (body or "").replace("\r\n", "\n").replace("\r", "\n")
+    return "\n".join(line.rstrip() for line in text.split("\n")).strip()
+
+
+def fetch_review_body(slug, pr, review_id):
+    return sh(["api", f"repos/{slug}/pulls/{pr}/reviews/{review_id}", "--jq", ".body"])
+
+
+def push_review_body(slug, pr, review_id, body):
+    subprocess.run(
+        ["gh", "api", "--method", "PUT",
+         f"repos/{slug}/pulls/{pr}/reviews/{review_id}", "--input", "-"],
+        input=json.dumps({"body": body}), text=True, check=True,
+        stdout=subprocess.DEVNULL,
+    )
+    live = fetch_review_body(slug, pr, review_id)
+    if normalize(live) == normalize(body):
+        return
+    diff = list(difflib.unified_diff(
+        normalize(body).splitlines(), normalize(live).splitlines(),
+        fromfile="pushed", tofile="live", lineterm="", n=1,
+    ))
+    sys.exit(
+        f"verify failed: review {review_id} does not match what was pushed\n"
+        + "\n".join(diff[:40])
+    )
+
+
+def print_review_table(reviews):
+    if not reviews:
+        sys.exit("no reviews on this PR")
+    for review in reviews:
+        body = (review.get("body") or "").strip().splitlines()
+        first = body[0][:60] if body else "(no body)"
+        print(f"{review['id']}\t{review['user']['login']}\t{review['state']}\t{first}")
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description=__doc__.split("\n\n", 1)[0],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument("pr", type=int, help="PR number")
+    ap.add_argument("--review-id", type=int, help="Target a specific review id")
+    ap.add_argument("--mine", action="store_true",
+                    help="Dump your latest review body instead of listing")
+    ap.add_argument("--edit-file", metavar="PATH",
+                    help="Replace the review body from this file; '-' for stdin")
+    ap.add_argument("edit_stdin", nargs="?", default=None,
+                    help="Use '-' as positional to read replacement from stdin")
+    args = ap.parse_args()
+
+    slug = repo_slug()
+    edit_source = args.edit_file or args.edit_stdin
+
+    if not edit_source and not args.mine and args.review_id is None:
+        print_review_table(list_reviews(slug, args.pr))
+        return
+
+    review = pick_review(list_reviews(slug, args.pr), args.review_id, current_login())
+
+    if not edit_source:
+        print(review.get("body") or "")
+        return
+
+    new_body = sys.stdin.read() if edit_source == "-" else open(edit_source).read()
+    push_review_body(slug, args.pr, review["id"], new_body)
+    print(f"updated review {review['id']} on PR #{args.pr} (verified)", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()
