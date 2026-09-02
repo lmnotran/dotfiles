@@ -29,9 +29,12 @@ Footer handling:
   carries its own footer wins over the fetched one.
 
 PRs are looked up via `gh pr view <num> --json body`; edits go through
-`gh pr edit <num> -F <tmpfile>`.
+`gh pr edit <num> -F <tmpfile>`. Every write is re-fetched and compared
+against what was sent, so a no-op or partial push fails loudly instead of
+reporting success.
 """
 import argparse
+import difflib
 import json
 import re
 import subprocess
@@ -47,11 +50,37 @@ def fetch_body(num):
     return out.rstrip("\n")
 
 
+def normalize(body):
+    """Canonical form for comparing a pushed body against the live one.
+
+    GitHub returns bodies with CRLF line endings and may drop trailing
+    whitespace, so compare on LF with per-line right-trim.
+    """
+    text = body.replace("\r\n", "\n").replace("\r", "\n")
+    return "\n".join(line.rstrip() for line in text.split("\n")).strip()
+
+
+def verify_body(num, expected):
+    live = fetch_body(num)
+    if normalize(live) == normalize(expected):
+        return
+    diff = list(difflib.unified_diff(
+        normalize(expected).splitlines(),
+        normalize(live).splitlines(),
+        fromfile="pushed", tofile="live", lineterm="", n=1,
+    ))
+    sys.exit(
+        f"verify failed: PR #{num} body does not match what was pushed\n"
+        + "\n".join(diff[:40])
+    )
+
+
 def push_body(num, body):
     with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as tf:
         tf.write(body)
         path = tf.name
     subprocess.check_call(["gh", "pr", "edit", str(num), "-F", path])
+    verify_body(num, body)
 
 
 def heading_depth(line):
@@ -173,7 +202,7 @@ def main():
         footer = ""
 
     push_body(args.num, join_footer(new_body, footer))
-    print(f"updated PR #{args.num}", file=sys.stderr)
+    print(f"updated PR #{args.num} (verified)", file=sys.stderr)
 
 
 if __name__ == "__main__":
