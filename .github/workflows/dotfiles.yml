@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Run ShellCheck on scripts
         uses: ludeeus/action-shellcheck@2.0.0
@@ -65,7 +65,7 @@ jobs:
     outputs:
       chezmoi-version: ${{ steps.chezmoi.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install chezmoi
         id: chezmoi
@@ -119,7 +119,7 @@ jobs:
     timeout-minutes: 10
     needs: chezmoi-apply
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install dependencies
         run: |
@@ -133,7 +133,7 @@ jobs:
           chezmoi apply --source ./chezmoi --exclude=scripts
 
       - name: Cache antidote
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.local/share/antidote
           key: antidote-${{ hashFiles('chezmoi/dot_zsh_plugins.txt') }}
@@ -195,7 +195,7 @@ jobs:
     timeout-minutes: 10
     needs: chezmoi-apply
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Neovim
         uses: rhysd/action-setup-vim@v1
@@ -210,7 +210,7 @@ jobs:
           chezmoi apply --source ./chezmoi --exclude=scripts
 
       - name: Cache lazy.nvim plugins
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.local/share/nvim/lazy
           key: lazy-nvim-${{ hashFiles('chezmoi/private_dot_config/nvim/lazy-lock.json') }}
@@ -254,7 +254,7 @@ jobs:
     timeout-minutes: 5
     needs: chezmoi-apply
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install tmux
         run: |
@@ -268,7 +268,7 @@ jobs:
           chezmoi apply --source ./chezmoi --exclude=scripts
 
       - name: Cache gpakosz/.tmux
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.tmux
           key: gpakosz-tmux-v1
@@ -303,7 +303,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Test install-deps --dry-run
         run: |
