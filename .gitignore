@@ -17,3 +17,5 @@ bin/
 !chezmoi/dot_local/bin/
 .pytest_cache/
 test-results.xml
+allure-results/
+allure-report/
