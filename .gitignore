@@ -15,3 +15,5 @@ docker/deluge/config/auth
 *.env
 bin/
 !chezmoi/dot_local/bin/
+.pytest_cache/
+test-results.xml
