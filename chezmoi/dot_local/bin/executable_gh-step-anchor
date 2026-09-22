@@ -1,89 +1,132 @@
 #!/usr/bin/env python3
-"""gh-step-anchor — emit a step-anchored GitHub Actions log URL.
+"""Find GitHub Actions log permalinks using the run attempt's per-step ZIP logs.
 
-Usage: gh-step-anchor <job_id_or_url> <regex>
-
-Looks up the job via `gh api`, finds the first log line matching <regex>, pairs
-the API's per-step started_at with the log's ##[group]Run markers to determine
-which step contains the match, and prints the anchored URL:
-
-    https://github.com/<owner>/<repo>/actions/runs/<run>/job/<job>#step:<n>:<m>
-
-Why the marker pairing: the API's started_at/completed_at are second-precision,
-which can't disambiguate step boundaries (e.g. step N completes at 11:22:04Z
-and step N+1 starts at 11:22:04Z while a log line lands at 11:22:04.07Z). The
-log's ##[group]Run lines are unambiguous boundaries; pairing them to API steps
-in order gives a stable answer.
-
-Requires `gh` on PATH, repo inferred from `gh` context (run inside a clone, or
-set GH_REPO=owner/repo).
+Requires gh authentication and completed, unexpired logs. A job URL supplies its
+repository; numeric IDs use --repo, GH_REPO, or the current gh repository context.
+No timestamp or group-marker guesses are used when step logs are unavailable.
 """
+
+import argparse
+import io
 import json
 import re
 import subprocess
-import sys
-from datetime import datetime, timedelta
-
-GROUP_RUN_RE = re.compile(r"##\[group\]Run\b")
-TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)")
+from dataclasses import dataclass
+from urllib.parse import urlsplit
+from zipfile import BadZipFile, ZipFile
 
 
-def gh(*args):
-    return subprocess.check_output(["gh", "api", *args], text=True)
+class AnchorError(Exception):
+    """The available input cannot identify an unambiguous log anchor."""
 
 
-def parse_ts(s):
-    return datetime.fromisoformat(s.replace("Z", "+00:00"))
+@dataclass(frozen=True, slots=True)
+class Job:
+    run_id: int
+    attempt: int
+    url: str
+    steps: frozenset[int]
 
 
-def main():
-    if len(sys.argv) != 3:
-        sys.exit(__doc__)
-    arg, pattern = sys.argv[1], sys.argv[2]
-    job_id = arg.rsplit("/", 1)[-1] if "/" in arg else arg
-    repo = "repos/{owner}/{repo}"
+def gh(endpoint: str) -> bytes:
+    return subprocess.check_output(["gh", "api", endpoint], timeout=120)
 
-    job = json.loads(gh(f"{repo}/actions/jobs/{job_id}"))
-    steps = sorted(
-        [
-            s
-            for s in job["steps"]
-            if s.get("conclusion") != "skipped"
-            and s.get("started_at")
-            and s.get("completed_at")
-        ],
-        key=lambda s: s["number"],
-    )
-    log = gh(f"{repo}/actions/jobs/{job_id}/logs").splitlines()
-    pat = re.compile(pattern)
 
-    match_line = next((n for n, t in enumerate(log, 1) if pat.search(t)), None)
-    if match_line is None:
-        sys.exit(f"pattern not matched: {pattern}")
+def job_target(value: str, repo: str | None) -> tuple[str, str]:
+    if value.isdecimal():
+        if repo and not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
+            raise AnchorError("--repo must be OWNER/REPO")
+        return f"repos/{repo or '{owner}/{repo}'}", value
+    url = urlsplit(value)
+    match = re.fullmatch(r"/([\w.-]+/[\w.-]+)/actions/runs/\d+/job/(\d+)/?", url.path)
+    if url.scheme != "https" or url.netloc != "github.com" or not match:
+        raise AnchorError("expected a numeric job ID or https://github.com/OWNER/REPO/actions/runs/RUN/job/JOB URL")
+    if repo and repo.lower() != match[1].lower():
+        raise AnchorError("--repo conflicts with the job URL's repository")
+    return f"repos/{match[1]}", match[2]
 
-    boundaries = []
-    last = 0
-    for step in steps:
-        start_dt = parse_ts(step["started_at"]) - timedelta(seconds=1)
-        for n in range(last + 1, len(log) + 1):
-            if not GROUP_RUN_RE.search(log[n - 1]):
+
+def log_lines(text: str) -> list[str]:
+    # Runner log line numbers count physical newlines, including group markers.
+    lines = text.lstrip("\ufeff").replace("\r\n", "\n").split("\n")
+    return lines[:-1] if lines[-1] == "" else lines
+
+
+def step_logs(archive: ZipFile, job_log: str) -> list[tuple[int, list[str]]]:
+    expected = log_lines(job_log)
+    folders = []
+    for member in archive.infolist():
+        match = re.fullmatch(r"-?\d+_([^/]+)\.txt", member.filename)
+        if match and log_lines(archive.read(member).decode("utf-8-sig")) == expected:
+            folders.append(match[1])
+    if len(folders) != 1:
+        raise AnchorError(f"expected one matching job log in the archive, found {len(folders)}; refusing to guess")
+    matcher = re.compile(rf"{re.escape(folders[0])}/(\d+)_[^/]+\.txt")
+    result = []
+    seen = set()
+    for member in archive.infolist():
+        match = matcher.fullmatch(member.filename)
+        if not match:
+            continue
+        number = int(match[1])
+        if number in seen:
+            raise AnchorError(f"multiple log files for step {number}; refusing to guess")
+        seen.add(number)
+        result.append((number, log_lines(archive.read(member).decode("utf-8-sig"))))
+    if not result:
+        raise AnchorError("per-step logs are unavailable; cannot produce a reliable line anchor")
+    return sorted(result)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("job", help="job ID or GitHub Actions job URL")
+    parser.add_argument("pattern", help="regular expression to find in the log")
+    parser.add_argument("-R", "--repo", help="OWNER/REPO for a numeric job ID")
+    parser.add_argument("--step", type=int, help="restrict to this API/UI step number")
+    parser.add_argument("--all", action="store_true", help="print every matching line, not just the first")
+    parser.add_argument("--json", action="store_true", help="emit matches with step, line, text and URL")
+    args = parser.parse_args()
+    try:
+        pattern = re.compile(args.pattern)
+        repo, job_id = job_target(args.job, args.repo)
+        raw = json.loads(gh(f"{repo}/actions/jobs/{job_id}"))
+        if raw["status"] != "completed":
+            raise AnchorError("job must be completed before its step logs can be downloaded")
+        job = Job(int(raw["run_id"]), int(raw["run_attempt"]), raw["html_url"],
+                  frozenset(int(step["number"]) for step in raw["steps"]))
+        if args.step is not None and args.step not in job.steps:
+            raise AnchorError(f"step {args.step} is not in this job")
+        job_log = gh(f"{repo}/actions/jobs/{job_id}/logs").decode("utf-8-sig")
+        endpoint = f"{repo}/actions/runs/{job.run_id}/attempts/{job.attempt}/logs"
+        with ZipFile(io.BytesIO(gh(endpoint))) as archive:
+            logs = step_logs(archive, job_log)
+        if any(number not in job.steps for number, _ in logs):
+            raise AnchorError("archive step numbers disagree with job metadata; refusing to guess")
+        matches = []
+        for number, lines in logs:
+            if args.step is not None and number != args.step:
                 continue
-            m = TS_RE.match(log[n - 1])
-            if m and parse_ts(m.group(1)) >= start_dt:
-                boundaries.append((step["number"], n))
-                last = n
+            for line_number, line in enumerate(lines, 1):
+                if pattern.search(line):
+                    matches.append({"step": number, "line": line_number, "text": line,
+                                    "url": f"{job.url.split('#')[0]}#step:{number}:{line_number}"})
+                    if not args.all:
+                        break
+            if matches and not args.all:
                 break
-
-    chosen = None
-    for step_no, marker in boundaries:
-        if marker <= match_line:
-            chosen = (step_no, marker)
+        if not matches:
+            raise AnchorError(f"pattern not matched in available step logs: {args.pattern}")
+        if args.json:
+            print(json.dumps(matches, ensure_ascii=False, indent=2))
         else:
-            break
-    if chosen is None:
-        sys.exit(f"no step marker precedes line {match_line}")
-
-    print(f"{job['html_url']}#step:{chosen[0]}:{match_line - chosen[1] + 1}")
+            for match in matches:
+                print(match["url"])
+    except (AnchorError, re.error, BadZipFile, UnicodeDecodeError,
+            json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+        parser.exit(1, f"gh-step-anchor: {error}\n")
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as error:
+        parser.exit(1, f"gh-step-anchor: unable to fetch logs: {error}\n")
 
 
 if __name__ == "__main__":
