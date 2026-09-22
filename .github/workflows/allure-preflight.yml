@@ -1,0 +1,55 @@
+name: Allure host preflight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Inspect authenticated deployment account
+        env:
+          ALLURE_PRIVATE_KEY: ${{ secrets.ALLURE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$ALLURE_PRIVATE_KEY" || { echo 'ALLURE_PRIVATE_KEY is missing' >&2; exit 1; }
+          ssh_dir=$(mktemp -d "$RUNNER_TEMP/allure-ssh.XXXXXX")
+          trap 'rm -rf "$ssh_dir"' EXIT
+          umask 077
+          printf '%s\n' "$ALLURE_PRIVATE_KEY" > "$ssh_dir/key"
+          unset ALLURE_PRIVATE_KEY
+          cp deploy/allure/known_hosts "$ssh_dir/known_hosts"
+          fingerprint=$(ssh-keygen -lf "$ssh_dir/known_hosts" | cut -d ' ' -f 2)
+          test "$fingerprint" = 'SHA256:JG20pc/avNOU2VZm1ndoZw2J7X6IwekxFNdzAjceoWw'
+          ssh -F /dev/null -i "$ssh_dir/key" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=10 \
+            -o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null \
+            -o UserKnownHostsFile="$ssh_dir/known_hosts" \
+            allure@bao.segfault.rip 'sh -s' <<'REMOTE'
+          set -eu
+          printf 'Account: '; id
+          printf 'Home: %s\n' "$HOME"
+          for executable in docker nginx python3 rsync; do
+            command -v "$executable" || true
+          done
+          if command -v docker >/dev/null 2>&1; then
+            docker version --format '{{.Server.Version}}' || true
+            docker compose version || true
+            docker network ls --format '{{.Name}}' || true
+            docker ps --format '{{.Names}}\t{{.Image}}' || true
+          fi
+          for directory in "$HOME" "$HOME/allure" /srv/allure /var/www/allure; do
+            if test -d "$directory"; then
+              ls -ld "$directory"
+              if test -w "$directory"; then printf 'Writable: %s\n' "$directory"; fi
+            fi
+          done
+          REMOTE
