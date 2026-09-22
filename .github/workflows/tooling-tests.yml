@@ -41,7 +41,29 @@ jobs:
           enable-cache: true
           cache-dependency-glob: requirements-tooling-test.txt
       - name: Run offline helper tests
-        run: uv run --with-requirements requirements-tooling-test.txt python -m pytest tests/tooling --disable-socket --strict-markers --junitxml=test-results.xml
+        run: uv run --with-requirements requirements-tooling-test.txt python -m pytest tests/tooling --disable-socket --strict-markers --junitxml=test-results.xml --alluredir=allure-results --clean-alluredir
+      - name: Upload Allure results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: allure-results-${{ matrix.python-version }}
+          path: allure-results/
+          if-no-files-found: ignore
+      - name: Set up Node for Allure
+        if: ${{ !cancelled() && hashFiles('allure-results/*-result.json') != '' }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Generate Allure report
+        if: ${{ !cancelled() && hashFiles('allure-results/*-result.json') != '' }}
+        run: npx --yes allure@3 generate allure-results --output allure-report --report-name "dotfiles · Python ${{ matrix.python-version }}"
+      - name: Upload Allure report
+        if: ${{ !cancelled() && hashFiles('allure-report/**/index.html') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: allure-report-${{ matrix.python-version }}
+          path: allure-report/
+          if-no-files-found: error
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v7
