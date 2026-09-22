@@ -134,9 +134,9 @@ dotfiles, or run interactive agents. See `tests/tooling/README.md` for coverage.
 
 The **Tooling tests** workflow runs on Python 3.11 and 3.13 when helpers, tests,
 test dependencies, or the workflow change. It also supports manual dispatch and
-uploads JUnit results. Existing dotfiles deployment and outlookcalfixer workflows
-remain separate. This suite does not exercise machine bootstrap, secret loading,
-calendar integrations, or the Docker services.
+uploads JUnit results. The existing dotfiles deployment workflow remains separate.
+This suite does not exercise machine bootstrap, secret loading, calendar
+integrations, or the Docker services.
 
 ### Allure reports
 
