@@ -118,6 +118,26 @@ Generates per-machine SSH and GPG keys locally and uploads the public keys to th
 
 ## Other Scripts
 
+### Tooling tests
+
+Run the managed CLI helper tests without GitHub/Jira credentials:
+
+```bash
+uv run --with-requirements requirements-tooling-test.txt python -m pytest tests/tooling --disable-socket --strict-markers
+```
+
+The suite covers all helpers under `chezmoi/dot_local/bin`: Actions log anchors
+and timings, CI sampling, PR/review body editing, Jira rendering/payloads, context
+nudges, and sandbox commands. External command boundaries are mocked or isolated
+in disposable fixtures; tests do not push commits, edit live issues, install
+dotfiles, or run interactive agents. See `tests/tooling/README.md` for coverage.
+
+The **Tooling tests** workflow runs on Python 3.11 and 3.13 when helpers, tests,
+test dependencies, or the workflow change. It also supports manual dispatch and
+uploads JUnit results. Existing dotfiles deployment and outlookcalfixer workflows
+remain separate. This suite does not exercise machine bootstrap, secret loading,
+calendar integrations, or the Docker services.
+
 | Script | Description |
 |--------|-------------|
 | `script/setup-keys` | Generate per-machine SSH/GPG keys and upload public keys to GitHub |
