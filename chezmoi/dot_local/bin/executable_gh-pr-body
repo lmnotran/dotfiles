@@ -178,7 +178,7 @@ def main():
                     help="Replace body (or section) from this file; '-' for stdin")
     ap.add_argument("edit_stdin", nargs="?", default=None,
                     help="Use '-' as positional to read replacement from stdin")
-    args = ap.parse_args()
+    args = ap.parse_intermixed_args()
 
     edit_source = args.edit_file or args.edit_stdin
     full_body = fetch_body(args.num)
