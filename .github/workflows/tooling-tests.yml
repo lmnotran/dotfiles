@@ -1,0 +1,51 @@
+name: Tooling tests
+
+on:
+  push:
+    paths:
+      - "chezmoi/dot_local/bin/**"
+      - "tests/tooling/**"
+      - "requirements-tooling-test.txt"
+      - ".github/workflows/tooling-tests.yml"
+  pull_request:
+    paths:
+      - "chezmoi/dot_local/bin/**"
+      - "tests/tooling/**"
+      - "requirements-tooling-test.txt"
+      - ".github/workflows/tooling-tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tooling-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+          cache-dependency-glob: requirements-tooling-test.txt
+      - name: Run offline helper tests
+        run: uv run --with-requirements requirements-tooling-test.txt python -m pytest tests/tooling --disable-socket --strict-markers --junitxml=test-results.xml
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tooling-test-results-${{ matrix.python-version }}
+          path: test-results.xml
+          if-no-files-found: ignore
