@@ -125,11 +125,11 @@ def test_job_target_when_repo_or_url_invalid(anchor: ModuleType, case: tuple[str
         anchor.job_target(*case)
 
 
-@pytest.mark.parametrize("payload", [b"not a zip", b"PK\x03\x04truncated"])
-def test_cli_when_archive_is_invalid(anchor: ModuleType, monkeypatch: pytest.MonkeyPatch, payload: bytes) -> None:
+@pytest.mark.parametrize("payload", ["not a zip", "PK\x03\x04truncated"])
+def test_cli_when_archive_is_invalid(anchor: ModuleType, monkeypatch: pytest.MonkeyPatch, payload: str) -> None:
     # Given
     metadata = {"run_id": 42, "run_attempt": 1, "html_url": URL, "status": "completed", "steps": [{"number": 1}]}
-    monkeypatch.setattr(anchor, "gh", Mock(side_effect=[json.dumps(metadata).encode(), b"job", payload]))
+    monkeypatch.setattr(anchor, "gh", Mock(side_effect=[json.dumps(metadata).encode(), b"job", payload.encode()]))
     monkeypatch.setattr(sys, "argv", ["gh-step-anchor", URL, "job"])
     # When / Then
     with pytest.raises(SystemExit) as error:
