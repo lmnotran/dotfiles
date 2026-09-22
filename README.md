@@ -138,6 +138,28 @@ uploads JUnit results. Existing dotfiles deployment and outlookcalfixer workflow
 remain separate. This suite does not exercise machine bootstrap, secret loading,
 calendar integrations, or the Docker services.
 
+### Allure reports
+
+Each tooling-test matrix job uploads `allure-results-<version>` and the generated
+Allure 3 HTML as `allure-report-<version>`, including failed-test reports when
+results exist. Python versions have separate reports to avoid treating matrix
+runs as retries.
+
+With uv and Node.js 24 installed:
+
+```bash
+uv run --with-requirements requirements-tooling-test.txt python -m pytest tests/tooling --disable-socket --alluredir=allure-results --clean-alluredir
+npx --yes allure@3 generate allure-results --output allure-report --report-name dotfiles
+uv run python -m http.server 8080 --bind 127.0.0.1 --directory allure-report
+```
+
+Use a fresh report output directory for each generation and browse
+`http://127.0.0.1:8080/`. Reports currently contain one run, not persistent history.
+Bao publishing is pending deployment access and the public/private access policy;
+the planned route is `https://bao.segfault.rip/allure/dotfiles/<python-version>/`.
+The existing SSH pattern lives in `bill-split/docs/deploying.md`; its GitHub secrets
+are not shared with this repo. No server configuration is changed by this workflow.
+
 | Script | Description |
 |--------|-------------|
 | `script/setup-keys` | Generate per-machine SSH/GPG keys and upload public keys to GitHub |
