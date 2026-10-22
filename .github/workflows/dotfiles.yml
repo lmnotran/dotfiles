@@ -90,13 +90,18 @@ jobs:
         run: |
           files=(
             ~/.zshrc
-            ~/.tmux.conf
             ~/.gitconfig
             ~/.zsh_plugins.txt
             ~/.config/nvim/init.lua
           )
           dirs=(
             ~/.config/nvim
+          )
+          # ~/.tmux.conf links into gpakosz/.tmux, which install-deps clones.
+          # This job skips install-deps, so the link dangles here. The tmux
+          # job clones gpakosz/.tmux and checks the target.
+          links=(
+            ~/.tmux.conf
           )
 
           failed=0
@@ -105,6 +110,9 @@ jobs:
           done
           for d in "${dirs[@]}"; do
             [[ -d "$d" ]] && echo "✓ $d" || { echo "✗ $d"; failed=1; }
+          done
+          for l in "${links[@]}"; do
+            [[ -L "$l" ]] && echo "✓ $l -> $(readlink "$l")" || { echo "✗ $l"; failed=1; }
           done
 
           [[ $failed -eq 0 ]] || { echo "❌ Missing dotfiles!"; exit 1; }
