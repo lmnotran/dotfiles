@@ -11,8 +11,8 @@ Context and rules for AI assistants working on this repository.
   - `git filter-repo` / `git filter-branch`
   - Any history-rewriting operations
 - **NEVER commit secrets** — Use environment variables or Bitwarden Secrets Manager
-- **Always sign commits** — Use `git commit -S` for all commits
-- **Re-sign after filter-repo** — After using `git filter-repo`, re-sign affected commits with `git rebase --committer-date-is-author-date --exec 'git commit --amend --no-edit -S' <base>`
+- **Skip signing on commits you make** — Use `git commit --no-gpg-sign`, and `git -c commit.gpgsign=false rebase …` for rebases. Signing asks for the GPG passphrase on the terminal in the middle of the session and garbles it. Mason signs his own commits.
+- **Leave re-signing to Mason** — `git filter-repo` and rebases drop signatures. Tell Mason which commits lost theirs instead of re-signing them yourself.
 - **Use conventional commits** — Format: `type(scope): description` (e.g., `docs:`, `fix:`, `refactor:`, `chore:`)
 - **Prefer amending commits** — When fixing something related to the previous commit, use `git commit --amend` to keep history clean rather than creating fixup commits. Update the commit message if needed to reflect the newly added changes. Logically independent changes should always be separate commits.
 
