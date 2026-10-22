@@ -38,3 +38,8 @@
 	helper =
 	helper = !{{ $gh }} auth git-credential
 {{- end }}
+{{- /* Repo owned by the separate "mason" account on the work Mac. */}}
+{{- if stat "/Users/mason/code/monarch-mcp-server" }}
+[safe]
+	directory = /Users/mason/code/monarch-mcp-server
+{{- end }}
