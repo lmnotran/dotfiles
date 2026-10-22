@@ -24,3 +24,6 @@ export PYENV_ROOT="$HOME/.pyenv"
 if command -v pyenv >/dev/null 2>&1; then
   eval "$(pyenv init --path)"
 fi
+
+# User-installed CLIs (claude, chezmoi, hermes) live in ~/.local/bin.
+case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac
