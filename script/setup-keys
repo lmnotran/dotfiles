@@ -64,7 +64,8 @@ is_work_machine() {
         return 0
     fi
 
-    local user_host="${username}@$(hostname -s)"
+    local user_host
+    user_host="${username}@$(hostname -s)"
     chezmoi data --source "$REPO_DIR" --format json \
         | jq -e --arg uh "$user_host" '.work.knownUserHosts | any(. == $uh)' > /dev/null 2>&1
 }
@@ -94,7 +95,8 @@ generate_ssh_key() {
 
     local key_path="$HOME/.ssh/$private_key"
     local pub_path="${key_path}.pub"
-    local comment="$(whoami)@$(hostname -s)"
+    local comment
+    comment="$(whoami)@$(hostname -s)"
 
     info "Setting up $label SSH key..."
     mkdir -p ~/.ssh
