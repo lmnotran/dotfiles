@@ -1,0 +1,11 @@
+# Matt Pocock's agent skills for OpenCode. Claude Code gets the same skills
+# from the mattpocock-skills plugin instead.
+# Takes only the skills the plugin ships: engineering/ and productivity/.
+# [a-z]* skips each folder's README.md, which would collide after
+# stripComponents. Don't add `exclude`: when both lists are set, chezmoi also
+# includes everything that matches neither.
+[".agents/skills"]
+    type = "archive"
+    url = "https://github.com/mattpocock/skills/archive/refs/tags/v1.3.1.tar.gz"
+    stripComponents = 3
+    include = ["*/skills/engineering/[a-z]*", "*/skills/engineering/[a-z]*/**", "*/skills/productivity/[a-z]*", "*/skills/productivity/[a-z]*/**"]
