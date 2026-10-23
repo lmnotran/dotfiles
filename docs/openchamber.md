@@ -11,12 +11,13 @@
 It needs Linux with systemd. Re-running it is safe: each step checks first and skips what's already done.
 
 1. Checks for `bun`, `opencode`, `chezmoi`, `python3` and `curl`, lists anything missing, and prints the install command for `bun` and `opencode`.
-2. Installs OpenChamber with `bun add -g @openchamber/web` if it isn't installed.
+2. Installs OpenChamber 1.x with `bun add -g @openchamber/web@1` if it isn't installed. See [Updating OpenChamber](#updating-openchamber) for why it's 1.x.
 3. Installs the unit and `chamberctl` from this repo with chezmoi, then reloads systemd.
 4. Sets `"shell": "/bin/bash"` in `~/.config/opencode/opencode.json`, or in `opencode.jsonc` when that's the only config. See [Why the bash tool uses bash](#why-the-bash-tool-uses-bash).
 5. Turns on lingering with `sudo loginctl enable-linger`, so the service starts at boot without a login.
 6. Saves the web UI password in `~/.config/openchamber/service.env`. It copies the one `openchamber serve` uses, or asks you for one.
 7. Starts the service with `chamberctl migrate`. If `openchamber serve` is running, this stops it first, which ends its agent sessions and terminals, so it asks before going ahead. `--yes` skips the question.
+8. Checks that OpenChamber answers and that its OpenCode server started. OpenChamber keeps serving its page when OpenCode fails, so the page loading isn't enough.
 
 When you run it from an OpenChamber terminal, step 7 closes that terminal. The switch still finishes, because it runs in its own systemd unit. Reload the page after about 15 seconds.
 
@@ -49,9 +50,17 @@ The `shell` key in `opencode.json` switches only the bash tool. The unit leaves 
 
 ## Updating OpenChamber
 
-Use the update button in OpenChamber. Under systemd it installs the update in its own job, then restarts `openchamber.service` by that name, so keep the unit's name.
+Stay on OpenChamber 1.x for now. OpenChamber 2.x needs OpenCode 2.1 or newer, and the newest OpenCode is still 1.x, so 2.x runs without OpenCode. That rules out OpenChamber's update button, because it installs the newest version, 2.x. Update within 1.x instead:
+
+```sh
+bun add -g @openchamber/web@1 && chamberctl restart
+```
+
+That works from an OpenChamber terminal too: the restart finishes even though it closes the terminal.
 
 Skip `openchamber update` on the command line. It stops the service's process and starts an `openchamber serve` copy on the same port, and the two fight over the port when systemd restarts the service.
+
+Once OpenCode 2.1 is out, upgrade OpenCode first. Then the update button works: under systemd it installs the update in its own job, then restarts `openchamber.service` by that name, so keep the unit's name.
 
 ## Gotchas
 
