@@ -21,13 +21,15 @@ Run OpenChamber (port $PORT) as the systemd user service $UNIT.
 Commands:
   status            Service state, PID and recent log lines
   start             Start the service
-  stop              Stop it; ends any agent sessions in progress
-  restart           Restart it; ends any agent sessions in progress
+  stop              Stop it; ends agent sessions and OpenChamber terminals
+  restart           Restart it; ends agent sessions and OpenChamber terminals
   logs [-f]         Last 200 log lines, or follow with -f
   enable            Start at boot
   disable           Stop starting at boot
   migrate [--yes]   One-time switch from 'openchamber serve' to the service.
                     Copies the UI password into $ENV_FILE.
+                    Safe to run from an OpenChamber terminal: the switch runs
+                    in its own systemd unit and finishes after the terminal closes.
 EOF
 }
 
@@ -92,25 +94,47 @@ migrate() {
   local assume_yes="${1:-}" answer _
   systemctl --user daemon-reload
   systemctl --user cat "$UNIT" >/dev/null 2>&1 || die "$UNIT isn't installed. Run: chezmoi apply"
+  if systemctl --user is-active --quiet "$UNIT" && ! daemon_running; then
+    echo "OpenChamber already runs as $UNIT."
+    return 0
+  fi
   [[ -f "$ENV_FILE" ]] || write_env_file
 
   if [[ "$assume_yes" != "--yes" ]]; then
-    read -r -p "This stops the running OpenChamber and ends any agent sessions in progress. Continue? [y/N] " answer
+    read -r -p "This stops the running OpenChamber and ends its agent sessions and terminals. Continue? [y/N] " answer
     [[ "$answer" == [yY]* ]] || die "cancelled"
   fi
 
-  if daemon_running; then
-    openchamber stop --port "$PORT"
-    for _ in $(seq 30); do
-      responding || break
-      sleep 1
-    done
-    ! responding || die "port $PORT is still answering after 'openchamber stop'"
-  fi
+  # The switch runs in its own transient unit: stopping the 'openchamber serve'
+  # daemon also ends the terminals it hosts, which may include this one.
+  # shellcheck disable=SC2016  # expanded by the transient unit's bash
+  systemd-run --user --quiet --collect --unit=openchamber-migrate \
+    --setenv=PATH="$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin" \
+    --setenv=OPENCHAMBER_DATA_DIR="$DATA_DIR" \
+    --setenv=PORT="$PORT" --setenv=URL="$URL" --setenv=UNIT="$UNIT" \
+    /bin/bash -c '
+      sleep 2
+      if curl -s -o /dev/null --max-time 2 "$URL"; then
+        openchamber stop --port "$PORT" || true
+        for _ in $(seq 30); do
+          curl -s -o /dev/null --max-time 2 "$URL" || break
+          sleep 1
+        done
+      fi
+      systemctl --user enable --now "$UNIT"
+    ' || die "couldn't start the switch. See: journalctl --user -u openchamber-migrate"
+  echo "Switching to $UNIT. If this terminal runs inside OpenChamber it closes now; reload the page in about 15s."
 
-  systemctl --user enable --now "$UNIT"
-  wait_ready
-  systemctl --user --no-pager --lines=0 status "$UNIT" || true
+  for _ in $(seq 60); do
+    if systemctl --user is-active --quiet "$UNIT" && responding; then
+      echo "OpenChamber is up on port $PORT as $UNIT."
+      systemctl --user --no-pager --lines=0 status "$UNIT" || true
+      return 0
+    fi
+    sleep 1
+  done
+  journalctl --user -u openchamber-migrate -u "$UNIT" -n 30 --no-pager >&2 || true
+  die "$UNIT isn't answering on $URL after 60s"
 }
 
 cmd="${1:-help}"
