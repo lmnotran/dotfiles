@@ -27,6 +27,10 @@ DATA_DIR="${OPENCHAMBER_DATA_DIR:-$HOME/.config/openchamber}"
 ENV_FILE="$DATA_DIR/service.env"
 RUN_FILE="$DATA_DIR/run/openchamber-3000.json"
 OPENCODE_CONFIG="$HOME/.config/opencode/opencode.json"
+# OpenCode reads opencode.jsonc too; edit that one when it's the only config.
+if [[ ! -e "$OPENCODE_CONFIG" && -e "${OPENCODE_CONFIG}c" ]]; then
+  OPENCODE_CONFIG="${OPENCODE_CONFIG}c"
+fi
 URL="http://127.0.0.1:3000/"
 
 usage() {
