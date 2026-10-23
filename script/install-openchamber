@@ -1,0 +1,223 @@
+#!/bin/bash
+#
+# Installs OpenChamber, the web UI for OpenCode, as the systemd user service
+# openchamber.service on 127.0.0.1:3000. chamberctl controls it afterwards.
+#
+# Safe to re-run: each step checks first and skips what's already done.
+# Docs: docs/openchamber.md
+#
+# Requires: Linux with systemd, bun, opencode, chezmoi, python3, curl.
+#
+# Usage: ./script/install-openchamber [--yes]
+#   --yes  Switch from a running `openchamber serve` without asking. The switch
+#          ends that instance's agent sessions and terminals.
+#
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(dirname "$SCRIPT_DIR")"
+
+UNIT=openchamber.service
+UNIT_FILE="$HOME/.config/systemd/user/$UNIT"
+CHAMBERCTL="$HOME/.local/bin/chamberctl"
+BUN="$HOME/.bun/bin/bun"
+CLI="$HOME/.bun/install/global/node_modules/@openchamber/web/bin/cli.js"
+DATA_DIR="${OPENCHAMBER_DATA_DIR:-$HOME/.config/openchamber}"
+ENV_FILE="$DATA_DIR/service.env"
+RUN_FILE="$DATA_DIR/run/openchamber-3000.json"
+OPENCODE_CONFIG="$HOME/.config/opencode/opencode.json"
+URL="http://127.0.0.1:3000/"
+
+usage() {
+  cat <<EOF
+Usage: ./script/install-openchamber [--yes]
+
+Installs OpenChamber as the systemd user service $UNIT on $URL.
+Safe to re-run: each step checks first and skips what's already done.
+
+Options:
+  --yes   Switch from a running 'openchamber serve' without asking. The switch
+          ends that instance's agent sessions and terminals.
+
+Docs: docs/openchamber.md
+EOF
+}
+
+step() { printf '\n==> %s\n' "$*"; }
+note() { printf '    %s\n' "$*"; }
+die() {
+  printf 'install-openchamber: %s\n' "$*" >&2
+  exit 1
+}
+
+# Hash of the unit without comments, so comment-only edits don't ask for a restart.
+unit_hash() {
+  [[ -f "$UNIT_FILE" ]] || return 0
+  { grep -v '^[[:space:]]*#' "$UNIT_FILE" || true; } | sha256sum
+}
+
+# Sets "shell": "/bin/bash" in opencode.json and keeps every other key.
+# Exits 0 after a change, 10 when it was already set, 2 when the file isn't plain JSON.
+set_opencode_shell() {
+  python3 - "$OPENCODE_CONFIG" <<'PY'
+import json, os, shutil, sys
+
+shown = sys.argv[1]
+path = os.path.realpath(shown)  # writes through a symlinked config
+try:
+    with open(path, encoding="utf-8") as f:
+        config = json.load(f)
+except FileNotFoundError:
+    config = {"$schema": "https://opencode.ai/config.json"}
+except ValueError:
+    config = None
+if not isinstance(config, dict):
+    print(f"    {shown} isn't plain JSON (comments?), so it wasn't changed.", file=sys.stderr)
+    sys.exit(2)
+if config.get("shell") == "/bin/bash":
+    print(f"    Already set in {shown}.")
+    sys.exit(10)
+config["shell"] = "/bin/bash"
+os.makedirs(os.path.dirname(path), exist_ok=True)
+tmp = f"{path}.install-openchamber.tmp"
+with open(tmp, "w", encoding="utf-8") as f:
+    json.dump(config, f, indent=2, ensure_ascii=False)
+    f.write("\n")
+if os.path.exists(path):
+    shutil.copymode(path, tmp)
+os.replace(tmp, path)
+print(f'    Set "shell": "/bin/bash" in {shown}.')
+PY
+}
+
+# Writes OPENCHAMBER_UI_PASSWORD to ENV_FILE (mode 600), quoted for systemd.
+# The password comes from $OC_UI_PASSWORD, else from the run file a running or
+# stopped `openchamber serve` left behind. Fails when neither has one.
+write_env_file() {
+  mkdir -p "$DATA_DIR"
+  python3 - "$RUN_FILE" "$ENV_FILE" <<'PY'
+import json, os, re, sys
+
+run_file, env_file = sys.argv[1], sys.argv[2]
+password = os.environ.get("OC_UI_PASSWORD", "")
+if not password:
+    try:
+        password = json.load(open(run_file)).get("uiPassword") or ""
+    except (OSError, ValueError, AttributeError):
+        password = ""
+if not password:
+    sys.exit(1)
+if not re.fullmatch(r"[A-Za-z0-9._~+/=:@-]+", password):
+    password = '"' + re.sub(r'([\\"`$])', r"\\\1", password) + '"'
+fd = os.open(env_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(fd, "w") as f:
+    f.write(f"OPENCHAMBER_UI_PASSWORD={password}\n")
+PY
+}
+
+yes_flag=""
+case "${1:-}" in
+  "") ;;
+  -y|--yes) yes_flag=--yes ;;
+  -h|--help|help)
+    usage
+    exit 0
+    ;;
+  *)
+    printf 'Unknown option: %s\n\n' "$1" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
+if (( $# > 1 )); then
+  usage >&2
+  exit 2
+fi
+
+step "Checking prerequisites"
+[[ "$(uname -s)" == Linux ]] || die "needs Linux with systemd"
+(( EUID != 0 )) || die "run it as your own user, not root"
+[[ -f "$REPO_DIR/chezmoi/private_dot_config/systemd/user/$UNIT" ]] \
+  || die "run it from the dotfiles repo; $REPO_DIR doesn't have the unit"
+systemctl --user show-environment >/dev/null 2>&1 \
+  || die "can't reach your systemd user manager. Run this in a login session on this machine."
+missing=()
+[[ -x "$BUN" ]] || missing+=("bun:      curl -fsSL https://bun.sh/install | bash")
+[[ -x "$HOME/.opencode/bin/opencode" ]] || command -v opencode >/dev/null \
+  || missing+=("opencode: curl -fsSL https://opencode.ai/install | bash")
+for tool in chezmoi python3 curl; do
+  command -v "$tool" >/dev/null || missing+=("$tool")
+done
+if (( ${#missing[@]} )); then
+  printf 'Install these first, then re-run:\n' >&2
+  printf '  %s\n' "${missing[@]}" >&2
+  exit 1
+fi
+note "Found bun, opencode, chezmoi, python3 and curl."
+
+step "Installing OpenChamber"
+if [[ -f "$CLI" ]]; then
+  note "Already installed: $("$BUN" "$CLI" --version 2>/dev/null || echo "unknown version")."
+else
+  "$BUN" add -g @openchamber/web
+  [[ -f "$CLI" ]] || die "bun didn't install OpenChamber where the unit expects it: $CLI"
+fi
+
+step "Installing $UNIT and chamberctl"
+was_active=no
+systemctl --user is-active --quiet "$UNIT" && was_active=yes
+unit_before="$(unit_hash)"
+chezmoi --source "$REPO_DIR" apply "$UNIT_FILE" "$CHAMBERCTL" \
+  || die "chezmoi couldn't install them. See: chezmoi --source $REPO_DIR diff $UNIT_FILE $CHAMBERCTL"
+systemctl --user daemon-reload
+note "$UNIT_FILE"
+note "$CHAMBERCTL"
+
+step "Making the bash tool use bash"
+shell_changed=no
+if set_opencode_shell; then
+  shell_changed=yes
+elif (( $? != 10 )); then
+  note "Skipped. Add \"shell\": \"/bin/bash\" to $OPENCODE_CONFIG by hand."
+fi
+
+step "Starting user services at boot"
+if [[ "$(loginctl show-user "$(id -un)" --property=Linger --value 2>/dev/null)" == yes ]]; then
+  note "Lingering is already on."
+else
+  note "Turning on lingering, so the service starts at boot without a login. This needs sudo."
+  sudo loginctl enable-linger "$(id -un)" \
+    || note "Skipped. Run: sudo loginctl enable-linger $(id -un)"
+fi
+
+step "Saving the web UI password"
+if [[ -f "$ENV_FILE" ]]; then
+  note "Already saved in $ENV_FILE."
+elif write_env_file; then
+  note "Copied the password from $RUN_FILE into $ENV_FILE."
+else
+  [[ -t 0 ]] || die "no UI password yet. Run this in a terminal, or put OPENCHAMBER_UI_PASSWORD=<password> in $ENV_FILE (mode 600)."
+  read -r -s -p "    New password for the OpenChamber web UI: " password
+  echo
+  read -r -s -p "    Type it again: " again
+  echo
+  [[ -n "$password" && "$password" == "$again" ]] || die "the passwords were empty or didn't match"
+  OC_UI_PASSWORD="$password" write_env_file
+  unset password again
+  note "Saved it in $ENV_FILE."
+fi
+
+step "Starting $UNIT"
+"$CHAMBERCTL" migrate ${yes_flag:+"$yes_flag"}
+
+step "Checking $UNIT"
+systemctl --user is-enabled --quiet "$UNIT" || die "$UNIT isn't enabled. Run: chamberctl enable"
+systemctl --user is-active --quiet "$UNIT" || die "$UNIT isn't running. See: chamberctl logs"
+curl -s -o /dev/null --max-time 5 "$URL" || die "nothing answers on $URL. See: chamberctl logs"
+note "OpenChamber runs as $UNIT on $URL and starts at boot."
+if [[ "$was_active" == yes ]] && { [[ "$unit_before" != "$(unit_hash)" ]] || [[ "$shell_changed" == yes ]]; }; then
+  note "The unit or the bash tool's shell changed while OpenChamber was running."
+  note "Run 'chamberctl restart' to load the change. That ends running agent sessions."
+fi
+note "Control it with chamberctl (status, restart, logs -f). Docs: $REPO_DIR/docs/openchamber.md"

@@ -116,6 +116,16 @@ Generates per-machine SSH and GPG keys locally and uploads the public keys to th
 2. **Secret UUIDs** — Stored in `script/load-secrets` (safe to commit)
 3. **Actual secrets** — Fetched at runtime via `bws`, never stored locally
 
+## OpenChamber Service
+
+On allston-st, OpenChamber (the web UI for OpenCode) runs as the systemd user service `openchamber.service`, controlled with `chamberctl`. To set it up on a Linux machine:
+
+```bash
+./script/install-openchamber
+```
+
+See [docs/openchamber.md](docs/openchamber.md) for what it installs, how to update OpenChamber, and gotchas.
+
 ## Other Scripts
 
 ### Tooling tests
@@ -164,6 +174,7 @@ are not shared with this repo. No server configuration is changed by this workfl
 |--------|-------------|
 | `script/setup-keys` | Generate per-machine SSH/GPG keys and upload public keys to GitHub |
 | `script/load-secrets` | Load secrets from Bitwarden Secrets Manager |
+| `script/install-openchamber` | Install OpenChamber as the systemd user service `openchamber.service` |
 
 ## Devcontainer Setup
 
