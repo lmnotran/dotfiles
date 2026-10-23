@@ -23,6 +23,7 @@ UNIT_FILE="$HOME/.config/systemd/user/$UNIT"
 CHAMBERCTL="$HOME/.local/bin/chamberctl"
 BUN="$HOME/.bun/bin/bun"
 CLI="$HOME/.bun/install/global/node_modules/@openchamber/web/bin/cli.js"
+OPENCHAMBER_PACKAGE="@openchamber/web@1"
 DATA_DIR="${OPENCHAMBER_DATA_DIR:-$HOME/.config/openchamber}"
 ENV_FILE="$DATA_DIR/service.env"
 RUN_FILE="$DATA_DIR/run/openchamber-3000.json"
@@ -59,6 +60,17 @@ die() {
 unit_hash() {
   [[ -f "$UNIT_FILE" ]] || return 0
   { grep -v '^[[:space:]]*#' "$UNIT_FILE" || true; } | sha256sum
+}
+
+# True once OpenChamber has started its OpenCode server inside the unit.
+opencode_running() {
+  local procs pid
+  procs="/sys/fs/cgroup$(systemctl --user show -p ControlGroup --value "$UNIT")/cgroup.procs"
+  [[ -r "$procs" ]] || return 1
+  while read -r pid; do
+    tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q 'opencode serve' && return 0
+  done < "$procs"
+  return 1
 }
 
 # Sets "shell": "/bin/bash" in opencode.json and keeps every other key.
@@ -164,7 +176,8 @@ step "Installing OpenChamber"
 if [[ -f "$CLI" ]]; then
   note "Already installed: $("$BUN" "$CLI" --version 2>/dev/null || echo "unknown version")."
 else
-  "$BUN" add -g @openchamber/web
+  # OpenChamber 2.x needs OpenCode 2.1 or newer, which isn't released yet.
+  "$BUN" add -g "$OPENCHAMBER_PACKAGE"
   [[ -f "$CLI" ]] || die "bun didn't install OpenChamber where the unit expects it: $CLI"
 fi
 
@@ -219,7 +232,17 @@ step "Checking $UNIT"
 systemctl --user is-enabled --quiet "$UNIT" || die "$UNIT isn't enabled. Run: chamberctl enable"
 systemctl --user is-active --quiet "$UNIT" || die "$UNIT isn't running. See: chamberctl logs"
 curl -s -o /dev/null --max-time 5 "$URL" || die "nothing answers on $URL. See: chamberctl logs"
-note "OpenChamber runs as $UNIT on $URL and starts at boot."
+# OpenChamber keeps serving its page when OpenCode fails to start, so check for OpenCode too.
+for _ in $(seq 30); do
+  opencode_running && break
+  sleep 1
+done
+if ! opencode_running; then
+  reason="$(journalctl --user -u "$UNIT" --since "$(systemctl --user show -p ActiveEnterTimestamp --value "$UNIT")" \
+    --no-pager -o cat 2>/dev/null | grep -i -m1 'failed to start opencode' || true)"
+  die "OpenChamber is up, but its OpenCode server isn't. ${reason:-See: chamberctl logs}"
+fi
+note "OpenChamber runs as $UNIT on $URL and starts at boot. Its OpenCode server is up."
 if [[ "$was_active" == yes ]] && { [[ "$unit_before" != "$(unit_hash)" ]] || [[ "$shell_changed" == yes ]]; }; then
   note "The unit or the bash tool's shell changed while OpenChamber was running."
   note "Run 'chamberctl restart' to load the change. That ends running agent sessions."
