@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# chamberctl — run OpenChamber as the systemd user service openchamber.service.
+# The unit lives in ~/.config/systemd/user/openchamber.service (chezmoi-managed).
+
+UNIT=openchamber.service
+PORT=3000
+DATA_DIR="${OPENCHAMBER_DATA_DIR:-$HOME/.config/openchamber}"
+RUN_FILE="$DATA_DIR/run/openchamber-$PORT.json"
+PID_FILE="$DATA_DIR/run/openchamber-$PORT.pid"
+ENV_FILE="$DATA_DIR/service.env"
+URL="http://127.0.0.1:$PORT/"
+
+usage() {
+  cat <<EOF
+Usage: chamberctl <command>
+
+Run OpenChamber (port $PORT) as the systemd user service $UNIT.
+
+Commands:
+  status            Service state, PID and recent log lines
+  start             Start the service
+  stop              Stop it; ends any agent sessions in progress
+  restart           Restart it; ends any agent sessions in progress
+  logs [-f]         Last 200 log lines, or follow with -f
+  enable            Start at boot
+  disable           Stop starting at boot
+  migrate [--yes]   One-time switch from 'openchamber serve' to the service.
+                    Copies the UI password into $ENV_FILE.
+EOF
+}
+
+die() {
+  echo "chamberctl: $*" >&2
+  exit 1
+}
+
+require_systemd() {
+  command -v systemctl >/dev/null 2>&1 || die "needs systemd user services (Linux only)"
+}
+
+# True when OpenChamber runs outside systemd (started by 'openchamber serve').
+daemon_running() {
+  [[ -f "$RUN_FILE" && -f "$PID_FILE" ]] || return 1
+  local mode pid
+  mode="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("launchMode", ""))' "$RUN_FILE" 2>/dev/null)" || return 1
+  pid="$(tr -dc '0-9' < "$PID_FILE")"
+  [[ "$mode" == daemon && -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
+}
+
+responding() {
+  curl -s -o /dev/null --max-time 2 "$URL"
+}
+
+wait_ready() {
+  local _
+  for _ in $(seq 60); do
+    if responding; then
+      echo "OpenChamber is up on port $PORT."
+      return 0
+    fi
+    sleep 1
+  done
+  journalctl --user -u "$UNIT" -n 30 --no-pager >&2 || true
+  die "$UNIT didn't answer on $URL within 60s"
+}
+
+# Writes OPENCHAMBER_UI_PASSWORD from the running daemon's run file to ENV_FILE (mode 0600).
+write_env_file() {
+  python3 - "$RUN_FILE" "$ENV_FILE" <<'PY'
+import json, os, re, sys
+
+run_file, env_file = sys.argv[1], sys.argv[2]
+try:
+    password = json.load(open(run_file)).get("uiPassword") or ""
+except (OSError, ValueError):
+    password = ""
+if not password:
+    sys.exit(f"chamberctl: no UI password in {run_file}. "
+             f"Put OPENCHAMBER_UI_PASSWORD=<password> in {env_file}, then re-run.")
+if not re.fullmatch(r"[A-Za-z0-9._~+/=:@-]+", password):
+    password = '"' + re.sub(r'([\\"`$])', r"\\\1", password) + '"'
+fd = os.open(env_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(fd, "w") as f:
+    f.write(f"OPENCHAMBER_UI_PASSWORD={password}\n")
+print(f"Copied the UI password into {env_file}.")
+PY
+}
+
+migrate() {
+  local assume_yes="${1:-}" answer _
+  systemctl --user daemon-reload
+  systemctl --user cat "$UNIT" >/dev/null 2>&1 || die "$UNIT isn't installed. Run: chezmoi apply"
+  [[ -f "$ENV_FILE" ]] || write_env_file
+
+  if [[ "$assume_yes" != "--yes" ]]; then
+    read -r -p "This stops the running OpenChamber and ends any agent sessions in progress. Continue? [y/N] " answer
+    [[ "$answer" == [yY]* ]] || die "cancelled"
+  fi
+
+  if daemon_running; then
+    openchamber stop --port "$PORT"
+    for _ in $(seq 30); do
+      responding || break
+      sleep 1
+    done
+    ! responding || die "port $PORT is still answering after 'openchamber stop'"
+  fi
+
+  systemctl --user enable --now "$UNIT"
+  wait_ready
+  systemctl --user --no-pager --lines=0 status "$UNIT" || true
+}
+
+cmd="${1:-help}"
+shift || true
+
+case "$cmd" in
+  help|-h|--help)
+    usage
+    exit 0
+    ;;
+  status|start|stop|restart|logs|enable|disable|migrate) ;;
+  *)
+    echo "Unknown command: $cmd" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
+
+require_systemd
+
+case "$cmd" in
+  status)
+    systemctl --user --no-pager --lines=15 status "$UNIT" || true
+    if daemon_running; then
+      echo "Note: an 'openchamber serve' instance is also running outside systemd. Run 'chamberctl migrate' to switch."
+    fi
+    ;;
+  start)
+    daemon_running && die "OpenChamber is running outside systemd ('openchamber serve'). Run 'chamberctl migrate' instead."
+    systemctl --user start "$UNIT"
+    wait_ready
+    ;;
+  stop)
+    systemctl --user stop "$UNIT"
+    ;;
+  restart)
+    systemctl --user restart "$UNIT"
+    wait_ready
+    ;;
+  logs)
+    if [[ "${1:-}" == "-f" ]]; then
+      exec journalctl --user -u "$UNIT" -n 50 -f
+    fi
+    journalctl --user -u "$UNIT" -n 200 --no-pager
+    ;;
+  enable|disable)
+    systemctl --user "$cmd" "$UNIT"
+    ;;
+  migrate)
+    migrate "${1:-}"
+    ;;
+esac

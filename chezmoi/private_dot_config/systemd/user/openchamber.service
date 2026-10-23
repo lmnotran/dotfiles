@@ -1,0 +1,20 @@
+# OpenChamber, the web UI for OpenCode, on 127.0.0.1:3000.
+# Control it with `chamberctl` (start, stop, restart, status, logs).
+# The bash tool's shell is set in ~/.config/opencode/opencode.json ("shell").
+[Unit]
+Description=OpenChamber web UI for OpenCode
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# OPENCHAMBER_UI_PASSWORD, kept out of git. `chamberctl migrate` writes it.
+EnvironmentFile=-%h/.config/openchamber/service.env
+Environment=PATH=%h/.opencode/bin:%h/.bun/bin:%h/.local/bin:%h/.pyenv/shims:%h/.pyenv/bin:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin:/snap/bin
+ExecStart=%h/.bun/bin/bun %h/.bun/install/global/node_modules/@openchamber/web/bin/cli.js serve --foreground --port 3000 --host 127.0.0.1
+WorkingDirectory=%h
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
