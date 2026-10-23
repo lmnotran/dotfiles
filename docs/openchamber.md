@@ -13,7 +13,7 @@ It needs Linux with systemd. Re-running it is safe: each step checks first and s
 1. Checks for `bun`, `opencode`, `chezmoi`, `python3` and `curl`, lists anything missing, and prints the install command for `bun` and `opencode`.
 2. Installs OpenChamber with `bun add -g @openchamber/web` if it isn't installed.
 3. Installs the unit and `chamberctl` from this repo with chezmoi, then reloads systemd.
-4. Sets `"shell": "/bin/bash"` in `~/.config/opencode/opencode.json`. See [Why the bash tool uses bash](#why-the-bash-tool-uses-bash).
+4. Sets `"shell": "/bin/bash"` in `~/.config/opencode/opencode.json`, or in `opencode.jsonc` when that's the only config. See [Why the bash tool uses bash](#why-the-bash-tool-uses-bash).
 5. Turns on lingering with `sudo loginctl enable-linger`, so the service starts at boot without a login.
 6. Saves the web UI password in `~/.config/openchamber/service.env`. It copies the one `openchamber serve` uses, or asks you for one.
 7. Starts the service with `chamberctl migrate`. If `openchamber serve` is running, this stops it first, which ends its agent sessions and terminals, so it asks before going ahead. `--yes` skips the question.
