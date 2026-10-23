@@ -230,13 +230,14 @@ step "Starting $UNIT"
 
 step "Checking $UNIT"
 systemctl --user is-enabled --quiet "$UNIT" || die "$UNIT isn't enabled. Run: chamberctl enable"
-systemctl --user is-active --quiet "$UNIT" || die "$UNIT isn't running. See: chamberctl logs"
-curl -s -o /dev/null --max-time 5 "$URL" || die "nothing answers on $URL. See: chamberctl logs"
-# OpenChamber keeps serving its page when OpenCode fails to start, so check for OpenCode too.
-for _ in $(seq 30); do
-  opencode_running && break
+# A freshly started OpenChamber takes a few seconds to answer and to start OpenCode.
+# It keeps serving its page when OpenCode fails to start, so wait for both.
+for _ in $(seq 45); do
+  systemctl --user is-active --quiet "$UNIT" && curl -s -o /dev/null --max-time 2 "$URL" && opencode_running && break
   sleep 1
 done
+systemctl --user is-active --quiet "$UNIT" || die "$UNIT isn't running. See: chamberctl logs"
+curl -s -o /dev/null --max-time 5 "$URL" || die "nothing answers on $URL. See: chamberctl logs"
 if ! opencode_running; then
   reason="$(journalctl --user -u "$UNIT" --since "$(systemctl --user show -p ActiveEnterTimestamp --value "$UNIT")" \
     --no-pager -o cat 2>/dev/null | grep -i -m1 'failed to start opencode' || true)"
