@@ -37,6 +37,7 @@ files, authenticates, contacts GitHub/Jira, launches agents, or edits a user's r
 | `gh-step-anchor` | In-memory attempt ZIP, matching job selection, setup/BOM/CRLF, nested markers, physical multiline numbering, skipped-step gaps, post steps, all/JSON/step filters, URL/repo arguments, ambiguous/absent/duplicate mapping, invalid ZIP |
 | `sandbox` | Real CLI help variants, unknown commands, repository-required error paths from a fully isolated non-repository |
 | `oc-session-purge` | Subagent IDs from spawn-tool results only, database children, top-level sessions skipped unless named, dry run deletes nothing, transcript/state/scan-dir removal, failed database delete exit code, ID validation |
+| `chamberctl` | Real CLI help variants and unknown commands; no systemd calls |
 
 ## Deliberate gaps
 
