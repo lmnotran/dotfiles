@@ -30,6 +30,8 @@ Commands:
                     Copies the UI password into $ENV_FILE.
                     Safe to run from an OpenChamber terminal: the switch runs
                     in its own systemd unit and finishes after the terminal closes.
+
+Install and docs: script/install-openchamber and docs/openchamber.md in lmnotran/dotfiles.
 EOF
 }
 
