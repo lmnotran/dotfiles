@@ -27,7 +27,7 @@ files, authenticates, contacts GitHub/Jira, launches agents, or edits a user's r
 
 | Helper | Behavioral coverage |
 |---|---|
-| `gh-pr-body` | Nested heading boundaries, last-section footer preservation, replacement footer precedence, missing sections, normalized verified writes and mismatch rejection |
+| `gh-pr-body` | Nested heading boundaries, last-section footer preservation, replacement footer precedence, missing sections, normalized verified writes and mismatch rejection, `-R` repo selection, PR URLs, one-line errors outside a checkout |
 | `gh-review-body` | Concatenated pagination JSON, latest authored nonempty review, explicit IDs, missing matches, PUT payload, verified writes/mismatch, stdin CLI editing |
 | `gh-run-timings` | Duration units/rounding, attempt endpoint/pagination, JSON filtering/sorting/top, timestamp arithmetic, skipped-step table rows, wall-clock display, empty results |
 | `ci-sample` | Protected/detached branch refusal, cleanup dry-run, missing safe reset target, summary files with missing values/outlier median, job arithmetic, workflow resolution/ambiguity |
