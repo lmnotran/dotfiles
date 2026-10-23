@@ -36,6 +36,7 @@ files, authenticates, contacts GitHub/Jira, launches agents, or edits a user's r
 | `claude-context-nudge` | Cache-token aggregation, latest usage, tier persistence/suppression/escalation, malformed JSON/transcript lines/state, environment fallback, disabled mode; no prompt prose assertions |
 | `gh-step-anchor` | In-memory attempt ZIP, matching job selection, setup/BOM/CRLF, nested markers, physical multiline numbering, skipped-step gaps, post steps, all/JSON/step filters, URL/repo arguments, ambiguous/absent/duplicate mapping, invalid ZIP |
 | `sandbox` | Real CLI help variants, unknown commands, repository-required error paths from a fully isolated non-repository |
+| `oc-session-purge` | Subagent IDs from spawn-tool results only, database children, top-level sessions skipped unless named, dry run deletes nothing, transcript/state/scan-dir removal, failed database delete exit code, ID validation |
 
 ## Deliberate gaps
 

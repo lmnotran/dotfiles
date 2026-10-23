@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+"""oc-session-purge — delete OpenCode sessions and every local copy of them.
+
+`opencode session delete` only removes a session from OpenCode's database.
+oh-my-openagent (OMO) keeps its own copies:
+
+- a transcript mirror per session in ~/.claude/transcripts/<id>.jsonl, also
+  for every subagent session the parent spawned (OMO drops the subagents'
+  database rows when they finish, so the mirror is the only copy left);
+- small per-session state files in ~/.local/share/opencode/storage/<kind>/.
+
+For each session ID this finds the subagent sessions (database children, plus
+the session IDs in the parent transcript's task, call_omo_agent and
+team_create results, recursively), then deletes the database rows through
+`opencode session delete`, the transcripts, the state files, and every file
+or directory named after one of the sessions under each --scan directory.
+
+A spawned ID that is a top-level session in the database is skipped unless it
+is named on the command line. Output lists session IDs and paths only, never
+transcript content.
+
+Usage:
+    oc-session-purge --dry-run ses_XXXX     # show what would go
+    oc-session-purge ses_XXXX [ses_YYYY …]  # delete
+    oc-session-purge ses_XXXX --scan ~/notes --scan /tmp/opencode
+"""
+import argparse
+import json
+import os
+import re
+import shutil
+import sqlite3
+import subprocess
+import sys
+from pathlib import Path
+
+SESSION_ID_RE = re.compile(r"^ses_[A-Za-z0-9]{26}$")
+EMBEDDED_ID_RE = re.compile(r"\bses_[A-Za-z0-9]{26}\b")
+SPAWN_TOOLS = frozenset({"task", "call_omo_agent", "team_create", "delegate_task"})
+SESSION_TABLES = ("session", "session_v2")
+
+
+def session_id(value):
+    if not SESSION_ID_RE.match(value):
+        raise argparse.ArgumentTypeError(f"not an OpenCode session ID: {value!r}")
+    return value
+
+
+def spawned_ids(transcript):
+    """Session IDs in the results of the tools that spawn subagent sessions."""
+    found = set()
+    if not transcript.is_file():
+        return found
+    with transcript.open(encoding="utf-8", errors="replace") as f:
+        for line in f:
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            if entry.get("type") != "tool_result" or entry.get("tool_name") not in SPAWN_TOOLS:
+                continue
+            output = entry.get("tool_output")
+            text = output if isinstance(output, str) else json.dumps(output)
+            found.update(EMBEDDED_ID_RE.findall(text))
+    return found
+
+
+class SessionDB:
+    """Read-only view of OpenCode's session tables; empty when the DB is absent."""
+
+    def __init__(self, path):
+        self.con = None
+        if path.is_file():
+            self.con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+            self.con.execute("PRAGMA busy_timeout = 5000")
+
+    def _ids(self, where, params=()):
+        ids = set()
+        if self.con is None:
+            return ids
+        for table in SESSION_TABLES:
+            try:
+                rows = self.con.execute(f"SELECT id FROM {table} WHERE {where}", params)
+            except sqlite3.OperationalError:
+                continue
+            ids.update(row[0] for row in rows)
+        return ids
+
+    def children(self, sid):
+        return self._ids("parent_id = ?", (sid,))
+
+    def top_level(self):
+        return self._ids("parent_id IS NULL")
+
+    def contains(self, sid):
+        return bool(self._ids("id = ?", (sid,)))
+
+
+def collect(roots, db, transcripts):
+    """Return (sessions to purge, deepest first; {skipped top-level ID: parent})."""
+    top_level = db.top_level()
+    order, skipped = list(roots), {}
+    seen, pending = set(roots), list(roots)
+    while pending:
+        parent = pending.pop(0)
+        found = db.children(parent) | spawned_ids(transcripts / f"{parent}.jsonl")
+        for child in sorted(found - seen):
+            if child in top_level:
+                skipped.setdefault(child, parent)
+                continue
+            seen.add(child)
+            order.append(child)
+            pending.append(child)
+    return list(reversed(order)), skipped
+
+
+def named_after(directory, ids):
+    """Files and directories under `directory` whose name contains one of `ids`."""
+    hits = []
+    if not directory.is_dir():
+        return hits
+    for root, dirs, files in os.walk(directory):
+        for name in list(dirs) + files:
+            if any(sid in name for sid in ids):
+                hits.append(Path(root) / name)
+        dirs[:] = [d for d in dirs if not any(sid in d for sid in ids)]
+    return hits
+
+
+def remove(path, dry_run):
+    if dry_run:
+        return
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
+def main(argv=None):
+    summary, details = (__doc__ or "").split("\n\n", 1)
+    ap = argparse.ArgumentParser(
+        description=summary,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=details,
+    )
+    ap.add_argument("sessions", nargs="+", type=session_id, metavar="SESSION_ID")
+    ap.add_argument("--dry-run", action="store_true", help="list what would be deleted, delete nothing")
+    ap.add_argument("--scan", action="append", type=Path, metavar="DIR",
+                    help="also delete files named after the sessions under DIR (default: /tmp/opencode)")
+    ap.add_argument("--db", type=Path, default=Path.home() / ".local/share/opencode/opencode.db",
+                    help="OpenCode database (default: %(default)s)")
+    args = ap.parse_args(argv)
+
+    home = Path.home()
+    transcripts = home / ".claude/transcripts"
+    storage = home / ".local/share/opencode/storage"
+    scan_dirs = args.scan or [Path("/tmp/opencode")]
+    verb = "would delete" if args.dry_run else "deleted"
+
+    db = SessionDB(args.db)
+    purge, skipped = collect(list(dict.fromkeys(args.sessions)), db, transcripts)
+    for sid, parent in sorted(skipped.items()):
+        print(f"skipped {sid}: top-level session found in {parent}'s results; name it to purge it")
+
+    failures = 0
+    for sid in purge:
+        if db.contains(sid):
+            if args.dry_run:
+                print(f"{verb} {sid} from the OpenCode database")
+            else:
+                result = subprocess.run(["opencode", "session", "delete", sid],
+                                        capture_output=True, text=True, check=False)
+                if result.returncode == 0:
+                    print(f"{verb} {sid} from the OpenCode database")
+                else:
+                    failures += 1
+                    print(f"failed: opencode session delete {sid}: {result.stderr.strip()[:200]}",
+                          file=sys.stderr)
+        paths = [transcripts / f"{sid}.jsonl"]
+        if storage.is_dir():
+            paths += sorted(p for kind in storage.iterdir() if kind.is_dir()
+                            for p in (kind / f"{sid}.json", kind / sid))
+        for path in paths:
+            if path.exists() or path.is_symlink():
+                remove(path, args.dry_run)
+                print(f"{verb} {path}")
+
+    for directory in scan_dirs:
+        for path in named_after(directory, purge):
+            remove(path, args.dry_run)
+            print(f"{verb} {path}")
+
+    print(f"{len(purge)} session(s){' (dry run)' if args.dry_run else ''}: {' '.join(sorted(purge))}")
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
