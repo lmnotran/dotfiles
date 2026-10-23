@@ -1,4 +1,6 @@
 import io
+import os
+import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -93,3 +95,48 @@ def test_push_when_server_retains_old_body(pr: ModuleType, monkeypatch: pytest.M
     # When / Then
     with pytest.raises(SystemExit, match="verify failed"):
         pr.push_body(17, "New")
+
+
+def test_repo_flag_when_outside_checkout(pr: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Given
+    monkeypatch.setenv("GH_REPO", "restored/at-teardown")
+    monkeypatch.delenv("GH_REPO")
+    monkeypatch.setattr(sys, "argv", ["gh-pr-body", "17", "-R", "LEGO-CPL/p11-firmware", "--section", "## Summary"])
+    fetch = Mock(return_value=BODY)
+    monkeypatch.setattr(pr, "fetch_body", fetch)
+    # When
+    pr.main()
+    # Then
+    assert os.environ["GH_REPO"] == "LEGO-CPL/p11-firmware"
+    fetch.assert_called_once_with(17)
+
+
+def test_pr_url_when_given_instead_of_number(pr: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Given
+    url = "https://github.com/LEGO-CPL/p11-firmware/pull/6339"
+    monkeypatch.setattr(sys, "argv", ["gh-pr-body", url + "/"])
+    fetch = Mock(return_value=BODY)
+    monkeypatch.setattr(pr, "fetch_body", fetch)
+    # When
+    pr.main()
+    # Then
+    fetch.assert_called_once_with(url)
+
+
+def test_pr_argument_when_neither_number_nor_url(pr: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Given
+    monkeypatch.setattr(sys, "argv", ["gh-pr-body", "pull/6339"])
+    # When / Then
+    with pytest.raises(SystemExit) as exit_info:
+        pr.main()
+    assert exit_info.value.code == 2
+
+
+def test_gh_failure_when_run_outside_repo(pr: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Given
+    monkeypatch.setattr(sys, "argv", ["gh-pr-body", "17"])
+    failure = subprocess.CalledProcessError(1, ["gh", "pr", "view", "17", "--json", "body"])
+    monkeypatch.setattr(pr, "fetch_body", Mock(side_effect=failure))
+    # When / Then
+    with pytest.raises(SystemExit, match=r"`gh pr view 17` failed \(exit 1\).*-R OWNER/REPO"):
+        pr.main()

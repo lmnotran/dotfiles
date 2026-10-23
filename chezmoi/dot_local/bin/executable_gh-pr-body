@@ -9,6 +9,8 @@ Usage:
                                               # replace just that section
     gh-pr-body <num> -                        # read replacement body from stdin
     gh-pr-body <num> --section "## X" -
+    gh-pr-body <num> -R OWNER/REPO ...        # outside a checkout
+    gh-pr-body https://github.com/OWNER/REPO/pull/<num> ...
 
 Section semantics:
 - A "section" starts at a markdown heading line that matches --section
@@ -31,15 +33,28 @@ Footer handling:
 PRs are looked up via `gh pr view <num> --json body`; edits go through
 `gh pr edit <num> -F <tmpfile>`. Every write is re-fetched and compared
 against what was sent, so a no-op or partial push fails loudly instead of
-reporting success.
+reporting success. The repository comes from the PR URL, -R (exported as
+GH_REPO for gh), an existing GH_REPO, or the current checkout.
 """
 import argparse
 import difflib
 import json
+import os
 import re
 import subprocess
 import sys
 import tempfile
+
+_PR_URL_RE = re.compile(r"^https://github\.com/[^/\s]+/[^/\s]+/pull/\d+/?$")
+
+
+def pr_ref(value):
+    """PR number as int, or a GitHub PR URL passed through to gh unchanged."""
+    if value.isdigit():
+        return int(value)
+    if _PR_URL_RE.match(value):
+        return value.rstrip("/")
+    raise argparse.ArgumentTypeError(f"not a PR number or GitHub PR URL: {value!r}")
 
 
 def fetch_body(num):
@@ -172,14 +187,27 @@ def main():
         description=__doc__.split("\n\n", 1)[0],
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    ap.add_argument("num", type=int, help="PR number")
+    ap.add_argument("num", type=pr_ref, help="PR number or GitHub PR URL")
+    ap.add_argument("-R", "--repo", metavar="OWNER/REPO",
+                    help="Repository for a PR number; needed outside a checkout")
     ap.add_argument("--section", help="Section heading line, e.g. '## Test plan'")
     ap.add_argument("--edit-file", metavar="PATH",
                     help="Replace body (or section) from this file; '-' for stdin")
     ap.add_argument("edit_stdin", nargs="?", default=None,
                     help="Use '-' as positional to read replacement from stdin")
     args = ap.parse_intermixed_args()
+    if args.repo:
+        os.environ["GH_REPO"] = args.repo
+    try:
+        run(args)
+    except subprocess.CalledProcessError as e:
+        sys.exit(
+            f"gh-pr-body: `{' '.join(map(str, e.cmd[:4]))}` failed (exit {e.returncode}). "
+            "Outside the repo's checkout, pass -R OWNER/REPO or the PR URL."
+        )
 
+
+def run(args):
     edit_source = args.edit_file or args.edit_stdin
     full_body = fetch_body(args.num)
     body, footer = split_footer(full_body)
@@ -202,7 +230,8 @@ def main():
         footer = ""
 
     push_body(args.num, join_footer(new_body, footer))
-    print(f"updated PR #{args.num} (verified)", file=sys.stderr)
+    label = f"#{args.num}" if isinstance(args.num, int) else args.num
+    print(f"updated PR {label} (verified)", file=sys.stderr)
 
 
 if __name__ == "__main__":
