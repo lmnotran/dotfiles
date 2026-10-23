@@ -55,6 +55,11 @@ responding() {
   curl -s -o /dev/null --max-time 2 "$URL"
 }
 
+# True when something holds the port, even an instance too busy to answer HTTP.
+port_in_use() {
+  ss -Hltn "sport = :$PORT" 2>/dev/null | grep -q .
+}
+
 wait_ready() {
   local _
   for _ in $(seq 60); do
@@ -91,7 +96,7 @@ PY
 }
 
 migrate() {
-  local assume_yes="${1:-}" answer _
+  local assume_yes="${1:-}" answer="" running=no _
   systemctl --user daemon-reload
   systemctl --user cat "$UNIT" >/dev/null 2>&1 || die "$UNIT isn't installed. Run: chezmoi apply"
   if systemctl --user is-active --quiet "$UNIT" && ! daemon_running; then
@@ -100,9 +105,13 @@ migrate() {
   fi
   [[ -f "$ENV_FILE" ]] || write_env_file
 
-  if [[ "$assume_yes" != "--yes" ]]; then
-    read -r -p "This stops the running OpenChamber and ends its agent sessions and terminals. Continue? [y/N] " answer
-    [[ "$answer" == [yY]* ]] || die "cancelled"
+  if port_in_use; then
+    running=yes
+    if [[ "$assume_yes" != "--yes" ]]; then
+      [[ -t 0 ]] || die "OpenChamber is running on port $PORT. Re-run with --yes to stop it and switch; that ends its agent sessions and terminals."
+      read -r -p "This stops the running OpenChamber and ends its agent sessions and terminals. Continue? [y/N] " answer || true
+      [[ "$answer" == [yY]* ]] || die "cancelled"
+    fi
   fi
 
   # The switch runs in its own transient unit: stopping the 'openchamber serve'
@@ -111,19 +120,24 @@ migrate() {
   systemd-run --user --quiet --collect --unit=openchamber-migrate \
     --setenv=PATH="$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin" \
     --setenv=OPENCHAMBER_DATA_DIR="$DATA_DIR" \
-    --setenv=PORT="$PORT" --setenv=URL="$URL" --setenv=UNIT="$UNIT" \
+    --setenv=PORT="$PORT" --setenv=UNIT="$UNIT" \
     /bin/bash -c '
+      in_use() { ss -Hltn "sport = :$PORT" | grep -q .; }
       sleep 2
-      if curl -s -o /dev/null --max-time 2 "$URL"; then
+      if in_use; then
         openchamber stop --port "$PORT" || true
         for _ in $(seq 30); do
-          curl -s -o /dev/null --max-time 2 "$URL" || break
+          in_use || break
           sleep 1
         done
       fi
       systemctl --user enable --now "$UNIT"
     ' || die "couldn't start the switch. See: journalctl --user -u openchamber-migrate"
-  echo "Switching to $UNIT. If this terminal runs inside OpenChamber it closes now; reload the page in about 15s."
+  if [[ "$running" == yes ]]; then
+    echo "Switching to $UNIT. If this terminal runs inside OpenChamber it closes now; reload the page in about 15s."
+  else
+    echo "Starting $UNIT."
+  fi
 
   for _ in $(seq 60); do
     if systemctl --user is-active --quiet "$UNIT" && responding; then
