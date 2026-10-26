@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""gh-pr-create — open a draft PR once its title, prose, and word budget pass.
+
+Usage:
+    gh-pr-create --title "CI_CD: Fix X (P11F-1234)" --body-file body.md
+    gh-pr-create --title "..." --body-file -        # body from stdin
+    gh-pr-create ... --base release/v2               # base other than the default branch
+    gh-pr-create ... --ready                         # ready for review instead of a draft
+    gh-pr-create ... --long "<reason>"               # go over the word budget, and say why
+    gh-pr-create ... --dry-run                       # run the checks, print the gh command
+
+Run it in the branch's checkout after pushing the branch. Every check runs
+before the PR exists, and any failure stops it:
+- Title, in p11-* repos: "<COMP>[,<COMP>]: <Description> (<JIRA-KEY>)", with a
+  capital letter first and no trailing period. When the checkout has
+  scripts/changelog/our_github.py, each component must be in its
+  KNOWN_COMPONENTS, the list the check_title CI job reads.
+- prose-lint on the whole body.
+- The word budget for the diff (`prose-lint --help` has the numbers). The diff
+  is `git diff --numstat origin/<base>...HEAD`, after fetching <base>.
+
+Then `gh pr create` opens the PR, the body is re-fetched and compared, and
+the PR URL is printed. The Jira integration's footer can land on the PR in
+between, so the comparison leaves footers out.
+"""
+import argparse
+import importlib.util
+import json
+import re
+import shlex
+import subprocess
+import sys
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+from types import ModuleType
+from typing import Final
+
+_TITLE_RE: Final = re.compile(r"^(?P<comps>[A-Z][A-Z0-9_]*(?:, ?[A-Z][A-Z0-9_]*)*): (?P<desc>.+) \([A-Z][A-Z0-9]+-\d+\)$")
+_KNOWN_RE: Final = re.compile(r"^KNOWN_COMPONENTS\s*=\s*\{(?P<names>.*?)\}", re.MULTILINE | re.DOTALL)
+COMPONENTS_FILE: Final = Path("scripts/changelog/our_github.py")
+
+
+def load_helper(name: str) -> ModuleType:
+    """A sibling helper script, by its installed or chezmoi source name."""
+    here = Path(__file__).resolve().parent
+    for path in (here / name, here / f"executable_{name}"):
+        if path.is_file():
+            loader = SourceFileLoader("gh_pr_create_" + name.replace("-", "_"), str(path))
+            spec = importlib.util.spec_from_loader(loader.name, loader)
+            assert spec is not None
+            module = importlib.util.module_from_spec(spec)
+            loader.exec_module(module)
+            return module
+    sys.exit(f"gh-pr-create: {name} isn't next to this script")
+
+
+def git(*args: str) -> str:
+    return subprocess.check_output(["git", *args], text=True)
+
+
+def repo_info() -> tuple[str, str]:
+    """(name, default branch) of the checkout's GitHub repository."""
+    info = json.loads(subprocess.check_output(["gh", "repo", "view", "--json", "name,defaultBranchRef"], text=True))
+    return info["name"], info["defaultBranchRef"]["name"]
+
+
+def diff_lines(base: str) -> int:
+    """Lines added plus deleted since the branch left origin/<base>, the way the PR diff counts them."""
+    git("fetch", "--quiet", "origin", base)
+    total = 0
+    for row in git("diff", "--numstat", f"origin/{base}...HEAD").splitlines():
+        added, deleted, _ = row.split("\t", 2)
+        if added != "-":
+            total += int(added) + int(deleted)
+    return total
+
+
+def known_components(root: Path) -> frozenset[str] | None:
+    """KNOWN_COMPONENTS from the checkout's changelog script, or None without one."""
+    path = root / COMPONENTS_FILE
+    match = _KNOWN_RE.search(path.read_text()) if path.is_file() else None
+    return frozenset(re.findall(r'"([A-Z_]+)"', match.group("names"))) if match else None
+
+
+def title_problems(title: str, known: frozenset[str] | None) -> list[str]:
+    """What breaks the P11 PR title format, or [] when nothing does."""
+    match = _TITLE_RE.match(title)
+    if match is None:
+        return ['write it as "<COMP>[,<COMP>]: <Description> (<JIRA-KEY>)", like "CI_CD: Fix the cache key (P11F-1234)"']
+    problems = []
+    description = match.group("desc")
+    if not description[0].isupper():
+        problems.append("start the description with a capital letter")
+    if description.endswith("."):
+        problems.append("drop the trailing period")
+    if known:
+        unknown = sorted({name.strip() for name in match.group("comps").split(",")} - known)
+        if unknown:
+            problems.append(f"unknown component {', '.join(unknown)}. The repo allows {', '.join(sorted(known))}")
+    return problems
+
+
+def run(args: argparse.Namespace) -> None:
+    lint, pr_body = load_helper("prose-lint"), load_helper("gh-pr-body")
+    body = sys.stdin.read() if args.body_file == "-" else Path(args.body_file).read_text()
+    name, default_base = repo_info()
+    base = args.base or default_base
+    problems = []
+    if name.lower().startswith("p11"):
+        root = Path(git("rev-parse", "--show-toplevel").strip())
+        problems = [f"title: {problem}" for problem in title_problems(args.title, known_components(root))]
+    changed = diff_lines(base)
+    findings = lint.lint_markdown(body)
+    if args.long:
+        print(f"gh-pr-create: word budget skipped: {args.long}", file=sys.stderr)
+    else:
+        findings += lint.lint_length(body, changed)
+    if problems or findings:
+        too_long = any(finding.rule.endswith("-length") for finding in findings)
+        sys.exit("\n".join([
+            "gh-pr-create: fix these before opening the PR:", *problems,
+            *([lint.format_findings(findings, "body")] if findings else []),
+            *(['Cut the body, or pass --long "<reason>" when the change needs the words.'] if too_long else []),
+        ]))
+    print(f"gh-pr-create: checks passed: {lint.word_counts(body)[0]} words, {changed}-line diff", file=sys.stderr)
+
+    command = ["gh", "pr", "create", "--title", args.title, "--base", base, "--body-file", "-"]
+    if not args.ready:
+        command.append("--draft")
+    if args.dry_run:
+        print("would run: " + shlex.join(command))
+        return
+    url = subprocess.run(command, input=body, text=True, capture_output=True, check=True).stdout.strip().splitlines()[-1]
+    sent, live = (pr_body.normalize(pr_body.split_footer(text)[0]) for text in (body, pr_body.fetch_body(url)))
+    if sent != live:
+        sys.exit(f"gh-pr-create: opened {url}, but its body doesn't match what was sent. Compare with `gh-pr-body {url}`.")
+    print(url)
+
+
+def main(argv: list[str] | None = None) -> None:
+    ap = argparse.ArgumentParser(
+        prog="gh-pr-create",
+        description=__doc__.split("\n\n", 1)[0],
+        epilog=__doc__.split("\n\n", 1)[1],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument("--title", required=True, help="PR title")
+    ap.add_argument("--body-file", required=True, metavar="PATH", help="PR body as Markdown; '-' reads stdin")
+    ap.add_argument("--base", help="Base branch (default: the repository's default branch)")
+    ap.add_argument("--ready", action="store_true", help="Open ready for review instead of as a draft")
+    ap.add_argument("--long", metavar="REASON", help="Skip the word budget, and say why")
+    ap.add_argument("--dry-run", action="store_true", help="Run the checks and print the gh command without running it")
+    args = ap.parse_args(argv)
+    try:
+        run(args)
+    except subprocess.CalledProcessError as error:
+        detail = (error.stderr or "").strip().splitlines()
+        sys.exit(f"gh-pr-create: `{' '.join(map(str, error.cmd[:3]))}` failed (exit {error.returncode})"
+                 + (f": {detail[-1]}" if detail else ""))
+
+
+if __name__ == "__main__":
+    main()
