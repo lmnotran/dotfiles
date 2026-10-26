@@ -6,6 +6,9 @@ From the dotfiles root:
 uv run --with-requirements requirements-tooling-test.txt python -m pytest tests/tooling --disable-socket --strict-markers
 ```
 
+Type-check the Python helpers with `script/typecheck-helpers`. CI runs it in its
+own job.
+
 Dependencies include pytest, pytest-socket, and allure-pytest for CI reports.
 CI tests Python 3.11 and 3.13.
 Installing dependencies may need network access on the first run; the

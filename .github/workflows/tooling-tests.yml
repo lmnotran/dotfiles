@@ -6,12 +6,14 @@ on:
       - "chezmoi/dot_local/bin/**"
       - "tests/tooling/**"
       - "requirements-tooling-test.txt"
+      - "script/typecheck-helpers"
       - ".github/workflows/tooling-tests.yml"
   pull_request:
     paths:
       - "chezmoi/dot_local/bin/**"
       - "tests/tooling/**"
       - "requirements-tooling-test.txt"
+      - "script/typecheck-helpers"
       - ".github/workflows/tooling-tests.yml"
   workflow_dispatch:
 
@@ -23,6 +25,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  typecheck:
+    name: Type check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+      - name: Type-check the Python helpers with mypy
+        run: script/typecheck-helpers
+
   test:
     name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
