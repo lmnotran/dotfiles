@@ -179,7 +179,7 @@ def cmd_collect(args):
 
 
 def print_summary(samples):
-    by_name = {}
+    by_name: dict[str, list[float | None]] = {}
     for s in samples:
         for j in s["jobs"]:
             by_name.setdefault(j["name"], []).append(j["run_seconds"])

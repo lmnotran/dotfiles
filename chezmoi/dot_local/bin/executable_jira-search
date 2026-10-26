@@ -29,7 +29,7 @@ def main() -> None:
     args = ap.parse_args()
     if args.max < 1:
         ap.error("--max must be positive")
-    issues = []
+    issues: list[dict] = []
     token = ""
     seen: set[str] = set()
     while len(issues) < args.max:
@@ -56,11 +56,12 @@ def main() -> None:
         issues.extend(page["issues"][:args.max - len(issues)])
         if page.get("isLast") or len(issues) >= args.max:
             break
-        token = page.get("nextPageToken")
-        if not token:
+        next_token = page.get("nextPageToken")
+        if not next_token:
             break
-        if not isinstance(token, str) or token in seen:
+        if not isinstance(next_token, str) or next_token in seen:
             sys.exit("invalid or repeated nextPageToken")
+        token = next_token
         seen.add(token)
     if args.json:
         print(json.dumps(issues, indent=2, ensure_ascii=False))

@@ -25,15 +25,9 @@ import sys
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from types import ModuleType
-from typing import Final, TypedDict
+from typing import Final
 
 BASE: Final = "https://cpl-legogroup.atlassian.net"
-
-
-class Document(TypedDict):
-    type: str
-    version: int
-    content: list
 
 
 def load_helper(name: str) -> ModuleType | None:
@@ -68,7 +62,7 @@ def current_description(key: str) -> dict | None:
     return description if isinstance(description, dict) else None
 
 
-def check_doc(doc: Document, old: dict | None) -> None:
+def check_doc(doc: dict, old: dict | None) -> None:
     """Stop when prose-lint flags text that `old` doesn't already have."""
     lint = load_helper("prose-lint")
     if lint is None:
