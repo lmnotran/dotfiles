@@ -203,6 +203,7 @@ def load_prose_lint():
         if path.is_file():
             loader = SourceFileLoader("prose_lint", str(path))
             spec = importlib.util.spec_from_loader("prose_lint", loader)
+            assert spec is not None
             module = importlib.util.module_from_spec(spec)
             loader.exec_module(module)
             return module

@@ -48,7 +48,7 @@ def session_id(value):
 
 def spawned_ids(transcript):
     """Session IDs in the results of the tools that spawn subagent sessions."""
-    found = set()
+    found: set[str] = set()
     if not transcript.is_file():
         return found
     with transcript.open(encoding="utf-8", errors="replace") as f:
@@ -75,7 +75,7 @@ class SessionDB:
             self.con.execute("PRAGMA busy_timeout = 5000")
 
     def _ids(self, where, params=()):
-        ids = set()
+        ids: set[str] = set()
         if self.con is None:
             return ids
         for table in SESSION_TABLES:
@@ -99,7 +99,8 @@ class SessionDB:
 def collect(roots, db, transcripts):
     """Return (sessions to purge, deepest first; {skipped top-level ID: parent})."""
     top_level = db.top_level()
-    order, skipped = list(roots), {}
+    order = list(roots)
+    skipped: dict[str, str] = {}
     seen, pending = set(roots), list(roots)
     while pending:
         parent = pending.pop(0)
@@ -116,7 +117,7 @@ def collect(roots, db, transcripts):
 
 def named_after(directory, ids):
     """Files and directories under `directory` whose name contains one of `ids`."""
-    hits = []
+    hits: list[Path] = []
     if not directory.is_dir():
         return hits
     for root, dirs, files in os.walk(directory):
