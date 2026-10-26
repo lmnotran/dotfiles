@@ -11,6 +11,16 @@ Usage:
     gh-pr-body <num> --section "## X" -
     gh-pr-body <num> -R OWNER/REPO ...        # outside a checkout
     gh-pr-body https://github.com/OWNER/REPO/pull/<num> ...
+    gh-pr-body <num> --edit-file body.md --no-lint
+                                              # skip the prose check
+
+Prose check:
+- Before pushing, the replacement text goes through `prose-lint` (em dashes,
+  semicolons, "~−", backticked SHAs, "atlOrigin=" links). Lines the PR body
+  already had are skipped, so only new or changed text is checked.
+- Any finding stops the edit. Fix it, or pass --no-lint for text you didn't
+  write. Without `prose-lint` next to this script, the check is skipped
+  with a note.
 
 Section semantics:
 - A "section" starts at a markdown heading line that matches --section
@@ -38,12 +48,15 @@ GH_REPO for gh), an existing GH_REPO, or the current checkout.
 """
 import argparse
 import difflib
+import importlib.util
 import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
 
 _PR_URL_RE = re.compile(r"^https://github\.com/[^/\s]+/[^/\s]+/pull/\d+/?$")
 
@@ -182,6 +195,33 @@ def replace_section(body, heading, new_content):
     return "\n".join(out).rstrip() + "\n"
 
 
+def load_prose_lint():
+    """prose-lint from this script's folder (installed or chezmoi source name), or None."""
+    here = Path(__file__).resolve().parent
+    for name in ("prose-lint", "executable_prose-lint"):
+        path = here / name
+        if path.is_file():
+            loader = SourceFileLoader("prose_lint", str(path))
+            spec = importlib.util.spec_from_loader("prose_lint", loader)
+            module = importlib.util.module_from_spec(spec)
+            loader.exec_module(module)
+            return module
+    return None
+
+
+def check_prose(new_text, old_text):
+    lint = load_prose_lint()
+    if lint is None:
+        print("gh-pr-body: prose-lint isn't next to this script, so the prose check was skipped", file=sys.stderr)
+        return
+    findings = lint.lint_markdown(new_text, baseline=old_text)
+    if findings:
+        sys.exit(
+            "gh-pr-body: prose-lint flagged the new text. Fix it, or pass --no-lint "
+            "for text you didn't write:\n" + lint.format_findings(findings, "body")
+        )
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__.split("\n\n", 1)[0],
@@ -195,6 +235,8 @@ def main():
                     help="Replace body (or section) from this file; '-' for stdin")
     ap.add_argument("edit_stdin", nargs="?", default=None,
                     help="Use '-' as positional to read replacement from stdin")
+    ap.add_argument("--no-lint", action="store_true",
+                    help="Skip the prose-lint check on the replacement text")
     args = ap.parse_intermixed_args()
     if args.repo:
         os.environ["GH_REPO"] = args.repo
@@ -220,6 +262,9 @@ def run(args):
         return
 
     new_text = sys.stdin.read() if edit_source == "-" else open(edit_source).read()
+    if not args.no_lint:
+        old_text = extract_section(body, args.section) if args.section else full_body
+        check_prose(new_text, old_text)
     if args.section:
         new_body = replace_section(body, args.section, new_text)
     else:
