@@ -1,0 +1,200 @@
+#!/usr/bin/env python3
+"""gh-pr-merge — merge a PR once its required checks, approval, and checkboxes are done.
+
+Usage:
+    gh-pr-merge <num>                      # squash-merge when nothing is open
+    gh-pr-merge <num> --dry-run            # list what's open and what it would run
+    gh-pr-merge <num> --reason "<why>"     # merge with items open, and say why on the PR
+    gh-pr-merge <num> --merge | --rebase   # instead of a squash merge
+    gh-pr-merge <num> -R OWNER/REPO        # outside a checkout (or pass the PR URL)
+
+Open items:
+- a required status check that failed, was cancelled, or hasn't finished
+- a review decision other than APPROVED, when the repository requires reviews
+- GitHub reporting the merge as blocked for another reason, like a required
+  check that never reported, or the branch being behind a strict base
+- an unchecked box in the PR body
+
+A draft, a closed PR, or merge conflicts stop it every time. Any other open
+item stops it unless you pass --reason. Then it posts a PR comment that lists
+what's open, followed by your reason, and merges. It adds --admin only when
+branch protection is what's open (a check, the approval, or a blocked merge).
+
+After merging, it prints the unchecked items under "## Follow-ups" in
+~/notes/<KEY>.md, where <KEY> is the Jira key at the end of the PR title.
+"""
+import argparse
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Final
+
+_PR_URL_RE: Final = re.compile(r"^https://github\.com/[^/\s]+/[^/\s]+/pull/\d+/?$")
+_OPEN_BOX_RE: Final = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+\[ \]\s+(.+?)\s*$")
+_HEADING_RE: Final = re.compile(r"^#{1,6}\s+(.*?)\s*$")
+_KEY_RE: Final = re.compile(r"\(([A-Z][A-Z0-9]+-\d+)\)\s*$")
+_PR_FIELDS: Final = "number,title,body,state,isDraft,mergeable,mergeStateStatus,reviewDecision"
+_CHECK_GAPS: Final = {"fail": "failed", "cancel": "was cancelled", "pending": "hasn't finished"}
+_REVIEW_GAPS: Final = {"REVIEW_REQUIRED": "it needs an approving review",
+                       "CHANGES_REQUESTED": "a reviewer requested changes"}
+
+
+@dataclass(frozen=True, slots=True)
+class PullRequest:
+    number: int
+    title: str
+    body: str
+    state: str
+    is_draft: bool
+    mergeable: str
+    merge_state: str
+    review_decision: str
+
+
+@dataclass(frozen=True, slots=True)
+class Gaps:
+    """What's open on a PR: `stops` block any merge, `protection` needs --admin, `boxes` needs a reason."""
+    stops: tuple[str, ...]
+    protection: tuple[str, ...]
+    boxes: tuple[str, ...]
+
+
+def pr_ref(value: str) -> int | str:
+    """PR number as int, or a GitHub PR URL passed through to gh unchanged."""
+    if value.isdigit():
+        return int(value)
+    if _PR_URL_RE.match(value):
+        return value.rstrip("/")
+    raise argparse.ArgumentTypeError(f"not a PR number or GitHub PR URL: {value!r}")
+
+
+def fetch_pr(ref: int | str) -> PullRequest:
+    raw = json.loads(subprocess.check_output(["gh", "pr", "view", str(ref), "--json", _PR_FIELDS], text=True))
+    return PullRequest(raw["number"], raw["title"], raw["body"], raw["state"], raw["isDraft"],
+                       raw["mergeable"], raw["mergeStateStatus"], raw["reviewDecision"] or "")
+
+
+def required_checks(ref: int | str) -> list[tuple[str, str]]:
+    """(name, bucket) for each required check. `gh pr checks` exits nonzero while checks fail or run."""
+    result = subprocess.run(["gh", "pr", "checks", str(ref), "--required", "--json", "name,bucket"],
+                            capture_output=True, text=True, check=False)
+    if result.stdout.strip():
+        return [(check["name"], check["bucket"]) for check in json.loads(result.stdout)]
+    if "no required checks" in result.stderr.lower():
+        return []
+    raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
+
+
+def unchecked_items(markdown: str) -> list[tuple[str, str]]:
+    """(section title, item text) for each unchecked checkbox outside fenced code."""
+    items: list[tuple[str, str]] = []
+    section, in_fence = "", False
+    for line in markdown.splitlines():
+        heading = _HEADING_RE.match(line)
+        if line.lstrip().startswith(("```", "~~~")):
+            in_fence = not in_fence
+        elif in_fence:
+            continue
+        elif heading:
+            section = heading.group(1)
+        elif box := _OPEN_BOX_RE.match(line):
+            items.append((section, box.group(1)))
+    return items
+
+
+def assess(pr: PullRequest, checks: list[tuple[str, str]]) -> Gaps:
+    stops = [] if pr.state == "OPEN" else [f"the PR is {pr.state.lower()}"]
+    if pr.is_draft:
+        stops.append(f"it's a draft. Mark it ready with `gh pr ready {pr.number}`")
+    if pr.mergeable == "CONFLICTING":
+        stops.append("it has merge conflicts")
+    protection = [f"required check `{name}` {_CHECK_GAPS.get(bucket, f'is {bucket}')}"
+                  for name, bucket in checks if bucket not in ("pass", "skipping")]
+    if pr.review_decision in _REVIEW_GAPS:
+        protection.append(_REVIEW_GAPS[pr.review_decision])
+    if pr.merge_state == "BLOCKED" and not protection:
+        protection.append("GitHub reports the merge as blocked, maybe by a required check that never reported")
+    if pr.merge_state == "BEHIND":
+        protection.append("the branch is behind its base")
+    boxes = [f"unchecked box under {section or 'the PR body'}: {item}" for section, item in unchecked_items(pr.body)]
+    return Gaps(tuple(stops), tuple(protection), tuple(boxes))
+
+
+def open_follow_ups(title: str) -> tuple[Path, list[str]] | None:
+    """The ticket's notes file and its unchecked Follow-ups, from the Jira key ending the PR title."""
+    key = _KEY_RE.search(title)
+    path = Path.home() / "notes" / f"{key.group(1)}.md" if key else None
+    if path is None or not path.is_file():
+        return None
+    return path, [item for section, item in unchecked_items(path.read_text()) if section.lower() == "follow-ups"]
+
+
+def run(args: argparse.Namespace) -> int:
+    pr = fetch_pr(args.num)
+    for _ in range(3):
+        if pr.state != "OPEN" or "UNKNOWN" not in (pr.mergeable, pr.merge_state):
+            break
+        time.sleep(2)
+        pr = fetch_pr(args.num)
+    gaps = assess(pr, required_checks(args.num) if pr.state == "OPEN" else [])
+    open_items = [*gaps.stops, *gaps.protection, *gaps.boxes]
+    print(f"PR #{pr.number}: {pr.title}")
+    print("\n".join(["Open:", *(f"- {item}" for item in open_items)]) if open_items else "Nothing open.", flush=True)
+    if gaps.stops or (open_items and not args.reason):
+        hint = "" if gaps.stops else ' Pass --reason "<why>" to merge anyway.'
+        print(f"gh-pr-merge: not merging.{hint}", file=sys.stderr)
+        return 1
+
+    command = ["gh", "pr", "merge", str(args.num), f"--{args.method}", *(["--admin"] if gaps.protection else [])]
+    comment = "\n".join(["Merging with these still open:", *(f"- {item}" for item in open_items), "", args.reason]) \
+        if open_items else None
+    if args.dry_run:
+        if comment:
+            print("Would comment:\n" + comment)
+        print("Would run: " + shlex.join(command))
+        return 0
+    if comment:
+        subprocess.run(["gh", "pr", "comment", str(args.num), "--body-file", "-"], input=comment, text=True, check=True)
+    subprocess.run(command, check=True, env={**os.environ, "GH_PROMPT_DISABLED": "1"})
+    follow_ups = open_follow_ups(pr.title)
+    if follow_ups and follow_ups[1]:
+        print(f"Open follow-ups in {follow_ups[0]}:")
+        print("\n".join(f"- [ ] {item}" for item in follow_ups[1]))
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(
+        prog="gh-pr-merge",
+        description=__doc__.split("\n\n", 1)[0],
+        epilog=__doc__.split("\n\n", 1)[1],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument("num", type=pr_ref, help="PR number or GitHub PR URL")
+    ap.add_argument("-R", "--repo", metavar="OWNER/REPO", help="Repository for a PR number; needed outside a checkout")
+    ap.add_argument("--reason", help="Merge with items open, and post this reason on the PR first")
+    ap.add_argument("--dry-run", action="store_true", help="List what's open and what would run, without merging")
+    methods = ap.add_mutually_exclusive_group()
+    for method in ("squash", "merge", "rebase"):
+        methods.add_argument(f"--{method}", dest="method", action="store_const", const=method,
+                             help=f"{method.title()} merge" + (" (default)" if method == "squash" else ""))
+    ap.set_defaults(method="squash")
+    args = ap.parse_args(argv)
+    if args.repo:
+        os.environ["GH_REPO"] = args.repo
+    try:
+        return run(args)
+    except subprocess.CalledProcessError as error:
+        detail = (error.stderr or "").strip()
+        sys.exit(f"gh-pr-merge: `{' '.join(map(str, error.cmd[:4]))}` failed (exit {error.returncode})"
+                 + (f": {detail}" if detail else ""))
+
+
+if __name__ == "__main__":
+    sys.exit(main())
