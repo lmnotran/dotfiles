@@ -34,7 +34,7 @@ files, authenticates, contacts GitHub/Jira, launches agents, or edits a user's r
 | `jira-put-description` | Invalid JSON/non-document rejection before subprocess, description envelope, PUT endpoint, 204 success and non-204 failure |
 | `jira-view` | ADF heading/list nesting/code/quote/rule/inline marks/cards/mentions/breaks, absent descriptions, raw JSON/ADF modes, non-JSON API errors |
 | `claude-context-nudge` | Cache-token aggregation, latest usage, tier persistence/suppression/escalation, malformed JSON/transcript lines/state, environment fallback, disabled mode; no prompt prose assertions |
-| `gh-step-anchor` | In-memory attempt ZIP, matching job selection, setup/BOM/CRLF, nested markers, physical multiline numbering, skipped-step gaps, post steps, all/JSON/step filters, URL/repo arguments, ambiguous/absent/duplicate mapping, invalid ZIP |
+| `gh-step-anchor` | In-memory attempt ZIP, matching job selection, setup/BOM/CRLF, nested markers, physical multiline numbering, skipped-step gaps, post steps, all/JSON/step filters, URL/repo arguments, ambiguous/absent/duplicate mapping, invalid ZIP; ZIP without step files: job-log split by step times across shared seconds, composite start-action/end-action markers, skipped steps, unplaceable lines, and logs that don't fit the step times |
 | `sandbox` | Real CLI help variants, unknown commands, repository-required error paths from a fully isolated non-repository |
 | `oc-session-purge` | Subagent IDs from spawn-tool results only, database children, top-level sessions skipped unless named, dry run deletes nothing, transcript/state/scan-dir removal, failed database delete exit code, ID validation |
 | `chamberctl` | Real CLI help variants and unknown commands; no systemd calls |
