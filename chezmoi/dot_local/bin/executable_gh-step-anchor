@@ -73,6 +73,14 @@ def log_lines(text: str) -> list[str]:
     return lines[:-1] if lines[-1] == "" else lines
 
 
+def line_matches(pattern: re.Pattern[str], line: str) -> bool:
+    """Whether the pattern matches the line, or the line's text after GitHub's timestamp."""
+    if pattern.search(line):
+        return True
+    stamped = STAMPED_LINE.match(line)
+    return bool(stamped and pattern.search(stamped[2]))
+
+
 def step_logs(archive: ZipFile, job_log: str) -> list[tuple[int, list[str]]]:
     expected = log_lines(job_log)
     folders = []
@@ -158,7 +166,8 @@ def split_job_log(lines: list[str], steps: tuple[Step, ...]) -> list[tuple[int, 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("job", help="job ID or GitHub Actions job URL")
-    parser.add_argument("pattern", help="regular expression to find in the log")
+    parser.add_argument("pattern", help="regular expression to find in the log. Each line is tried with and "
+                                        "without GitHub's leading timestamp, so ^ anchors to the log text")
     parser.add_argument("-R", "--repo", help="OWNER/REPO for a numeric job ID")
     parser.add_argument("--step", type=int, help="restrict to this API/UI step number")
     parser.add_argument("--all", action="store_true", help="print every matching line, not just the first")
@@ -185,8 +194,8 @@ def main() -> None:
                     Step(int(step["number"]), step["name"], step["started_at"][:19], step["completed_at"][:19])
                     for step in raw["steps"]
                     if step["conclusion"] != "skipped" and step["started_at"] and step["completed_at"]))
-                placed = sum(bool(pattern.search(line)) for _, step_lines in logs for line in step_lines)
-                skipped = sum(bool(pattern.search(line)) for line in lines) - placed
+                placed = sum(line_matches(pattern, line) for _, step_lines in logs for line in step_lines)
+                skipped = sum(line_matches(pattern, line) for line in lines) - placed
                 if skipped:
                     print(f"gh-step-anchor: skipped {skipped} matching line(s) it can't place in a step", file=sys.stderr)
         if any(number not in job.steps for number, _ in logs):
@@ -196,7 +205,7 @@ def main() -> None:
             if args.step is not None and number != args.step:
                 continue
             for line_number, line in enumerate(lines, 1):
-                if pattern.search(line):
+                if line_matches(pattern, line):
                     matches.append({"step": number, "line": line_number, "text": line,
                                     "url": f"{job.url.split('#')[0]}#step:{number}:{line_number}"})
                     if not args.all:

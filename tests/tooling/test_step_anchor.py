@@ -82,6 +82,18 @@ def test_step_filter_when_post_step_requested(anchor: ModuleType, logs: Mock, mo
     assert output.getvalue() == URL + "#step:7:2\n"
 
 
+@pytest.mark.parametrize("pattern", [r"^##\[group\]outer", r"^2026-01-01T00:00:00Z ##\[group\]outer"])
+def test_caret_anchors_after_timestamp_when_step_files_exist(anchor: ModuleType, logs: Mock, monkeypatch: pytest.MonkeyPatch, pattern: str) -> None:
+    # Given
+    output = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", output)
+    monkeypatch.setattr(sys, "argv", ["gh-step-anchor", URL, pattern])
+    # When
+    anchor.main()
+    # Then
+    assert output.getvalue() == URL + "#step:3:1\n"
+
+
 @pytest.mark.parametrize("arguments", [["absent"], ["TARGET", "--step", "2"], ["TARGET", "--step", "99"], ["["]])
 def test_cli_failure_when_match_unavailable(anchor: ModuleType, logs: Mock, arguments: list[str]) -> None:
     # Given
@@ -175,6 +187,17 @@ def test_fallback_first_match_when_archive_has_no_step_files(anchor: ModuleType,
     # Given
     serve_job_log(anchor, monkeypatch, JOB_LOG, STEP_TIMES)
     monkeypatch.setattr(sys, "argv", ["gh-step-anchor", URL, "TARGET b"])
+    # When
+    anchor.main()
+    # Then
+    assert capsys.readouterr().out == URL + "#step:3:3\n"
+
+
+@pytest.mark.parametrize("pattern", ["^TARGET b", r"^2026-01-01T00:00:02\.5000000Z TARGET build$"])
+def test_fallback_caret_anchors_after_timestamp(anchor: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], pattern: str) -> None:
+    # Given
+    serve_job_log(anchor, monkeypatch, JOB_LOG, STEP_TIMES)
+    monkeypatch.setattr(sys, "argv", ["gh-step-anchor", URL, pattern])
     # When
     anchor.main()
     # Then
