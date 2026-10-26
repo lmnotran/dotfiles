@@ -52,6 +52,7 @@ def test_replacement_footer_wins_when_replacing_body(pr: ModuleType, monkeypatch
     monkeypatch.setattr(sys, "argv", ["gh-pr-body", "17", "--edit-file", "-"])
     monkeypatch.setattr(sys, "stdin", io.StringIO(replacement))
     monkeypatch.setattr(pr, "fetch_body", Mock(return_value=BODY))
+    monkeypatch.setattr(pr, "fetch_diff_lines", Mock(return_value=10))
     push = Mock()
     monkeypatch.setattr(pr, "push_body", push)
     # When
@@ -161,6 +162,7 @@ def test_prose_lint_skips_lines_the_section_already_has(pr: ModuleType, monkeypa
     monkeypatch.setattr(sys, "argv", ["gh-pr-body", "17", "--section", "## Summary", "-"])
     monkeypatch.setattr(sys, "stdin", io.StringIO("Old line — someone else's.\nMy new line."))
     monkeypatch.setattr(pr, "fetch_body", Mock(return_value=body))
+    monkeypatch.setattr(pr, "fetch_diff_lines", Mock(return_value=10))
     push = Mock()
     monkeypatch.setattr(pr, "push_body", push)
     # When
@@ -186,3 +188,36 @@ def test_prose_lint_skipped_when_no_lint_or_missing(pr: ModuleType, monkeypatch:
     # Then
     push.assert_called_once()
     assert ("prose check was skipped" in capsys.readouterr().err) == missing_lint
+
+
+def test_word_budget_blocks_a_long_whole_body_edit(pr: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Given
+    monkeypatch.setattr(sys, "argv", ["gh-pr-body", "17", "--edit-file", "-"])
+    monkeypatch.setattr(sys, "stdin", io.StringIO("## Summary\n\n" + "word " * 61))
+    monkeypatch.setattr(pr, "fetch_body", Mock(return_value=BODY))
+    monkeypatch.setattr(pr, "fetch_diff_lines", Mock(return_value=400))
+    push = Mock()
+    monkeypatch.setattr(pr, "push_body", push)
+    # When / Then
+    with pytest.raises(SystemExit, match=r"over its word budget(.|\n)*summary-length"):
+        pr.main()
+    push.assert_not_called()
+
+
+@pytest.mark.parametrize(("extra", "text"), [
+    (["--section", "## Test plan"], "- [x] " + "word " * 200),
+    (["--long", "the migration needs it"], "## Summary\n\n" + "word " * 61),
+])
+def test_word_budget_skipped_for_other_sections_or_with_long(pr: ModuleType, monkeypatch: pytest.MonkeyPatch,
+                                                             extra: list[str], text: str) -> None:
+    # Given
+    monkeypatch.setattr(sys, "argv", ["gh-pr-body", "17", *extra, "-"])
+    monkeypatch.setattr(sys, "stdin", io.StringIO(text))
+    monkeypatch.setattr(pr, "fetch_body", Mock(return_value=BODY))
+    monkeypatch.setattr(pr, "fetch_diff_lines", Mock(side_effect=AssertionError("budget not checked")))
+    push = Mock()
+    monkeypatch.setattr(pr, "push_body", push)
+    # When
+    pr.main()
+    # Then
+    push.assert_called_once()

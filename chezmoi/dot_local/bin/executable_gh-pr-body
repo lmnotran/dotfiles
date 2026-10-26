@@ -21,6 +21,9 @@ Prose check:
 - Any finding stops the edit. Fix it, or pass --no-lint for text you didn't
   write. Without `prose-lint` next to this script, the check is skipped
   with a note.
+- Replacing the whole body or the "## Summary" section also checks the word
+  budget for the PR's diff size (`prose-lint --help` has the numbers). Pass
+  --long "<reason>" when the change needs the words.
 
 Section semantics:
 - A "section" starts at a markdown heading line that matches --section
@@ -114,6 +117,9 @@ def push_body(num, body):
 def heading_depth(line):
     m = re.match(r"^(#{1,6})\s", line)
     return len(m.group(1)) if m else None
+
+
+_SUMMARY_RE = re.compile(r"^#{1,6}\s+summary\s*$", re.IGNORECASE)
 
 
 # Markdown link-reference definition, e.g. "[P11F-1234]: https://...?atlOrigin=..."
@@ -223,6 +229,19 @@ def check_prose(new_text, old_text):
         )
 
 
+def fetch_diff_lines(num: int | str) -> int:
+    stats = json.loads(subprocess.check_output(["gh", "pr", "view", str(num), "--json", "additions,deletions"], text=True))
+    return stats["additions"] + stats["deletions"]
+
+
+def check_length(num: int | str, body: str) -> None:
+    lint = load_prose_lint()
+    findings = lint.lint_length(body, fetch_diff_lines(num)) if lint else []
+    if lint and findings:
+        sys.exit("gh-pr-body: the body is over its word budget. Cut it, or pass --long \"<reason>\" when the "
+                 "change needs the words:\n" + lint.format_findings(findings, "body"))
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__.split("\n\n", 1)[0],
@@ -238,6 +257,8 @@ def main():
                     help="Use '-' as positional to read replacement from stdin")
     ap.add_argument("--no-lint", action="store_true",
                     help="Skip the prose-lint check on the replacement text")
+    ap.add_argument("--long", metavar="REASON",
+                    help="Skip the word budget on a whole-body or Summary edit, and say why")
     args = ap.parse_intermixed_args()
     if args.repo:
         os.environ["GH_REPO"] = args.repo
@@ -275,7 +296,12 @@ def run(args):
     if split_footer(new_body)[1]:
         footer = ""
 
-    push_body(args.num, join_footer(new_body, footer))
+    final_body = join_footer(new_body, footer)
+    if args.long:
+        print(f"gh-pr-body: word budget skipped: {args.long}", file=sys.stderr)
+    elif not args.no_lint and (args.section is None or _SUMMARY_RE.match(args.section.strip())):
+        check_length(args.num, final_body)
+    push_body(args.num, final_body)
     label = f"#{args.num}" if isinstance(args.num, int) else args.num
     print(f"updated PR {label} (verified)", file=sys.stderr)
 

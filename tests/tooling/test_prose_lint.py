@@ -129,3 +129,44 @@ def test_cli_baseline_needs_one_file(lint: ModuleType, tmp_path: Path) -> None:
     with pytest.raises(SystemExit) as raised:
         lint.main(["--baseline", "old.md", "a.md", "b.md"])
     assert raised.value.code == 2
+
+
+def test_word_budget_flags_a_long_summary_when_the_diff_is_large(lint: ModuleType) -> None:
+    # Given
+    body = "## Summary\n\n" + "word " * 61 + "\n\n## Changes\n\n" + "more " * 300
+    # When
+    findings = lint.lint_length(body, 400)
+    # Then
+    assert [(finding.where, finding.rule) for finding in findings] == [("Summary", "summary-length")]
+
+
+@pytest.mark.parametrize(("diff_lines", "expected"), [(49, ["body-length"]), (50, [])])
+def test_word_budget_for_the_whole_body_applies_under_fifty_changed_lines(
+        lint: ModuleType, diff_lines: int, expected: list[str]) -> None:
+    # Given
+    body = "Fixes the cache key.\n\n" + "word " * 147
+    # When / Then
+    assert rules(lint.lint_length(body, diff_lines)) == expected
+
+
+def test_word_count_skips_what_reviewers_do_not_read(lint: ModuleType) -> None:
+    # Given
+    body = (
+        "## Summary\n\nOne two three.\n<!-- template\nnote -->\n```mermaid\nflowchart LR\n  A --> B\n```\n"
+        "## Test plan\n\n- [x] Checked the [step](https://github.com/o/r/actions/runs/1) at https://x.invalid/a "
+        "<img alt=\"x\" src=\"y\">\n\n[P11F-1]: https://jira.invalid/browse/P11F-1?atlOrigin=x\n"
+    )
+    # When / Then
+    assert lint.word_counts(body) == (7, 3)
+
+
+def test_cli_diff_lines_adds_the_word_budget(lint: ModuleType, tmp_path: Path,
+                                            capsys: pytest.CaptureFixture[str]) -> None:
+    body = tmp_path / "body.md"
+    body.write_text("## Summary\n\n" + "word " * 61 + "\n")
+    assert lint.main([str(body)]) == 0
+    assert lint.main(["--diff-lines", "400", str(body)]) == 1
+    assert f"{body}:Summary: summary-length:" in capsys.readouterr().out
+    with pytest.raises(SystemExit) as raised:
+        lint.main(["--adf", "--diff-lines", "4", str(body)])
+    assert raised.value.code == 2

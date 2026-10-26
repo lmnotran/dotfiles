@@ -14,6 +14,14 @@ blocks is skipped:
                     query. The Jira integration's "[KEY]: https://…?atlOrigin=…"
                     footer lines are left alone.
 
+Word budget, for Markdown PR bodies with --diff-lines N (the PR's added plus
+deleted lines). gh-pr-create and gh-pr-body pass it:
+    summary-length  more than 60 words under the "## Summary" heading.
+    body-length     more than 150 words in the body when the diff changes
+                    fewer than 50 lines.
+Word counts skip headings, fenced code, HTML, link targets, bare URLs,
+checkbox markers, and the Jira footer's reference lines.
+
 --baseline OLD skips Markdown lines, or ADF paragraphs and headings, that
 OLD already has, so only new or changed text is checked.
 
@@ -25,12 +33,14 @@ Examples:
     gh pr view 42 --json body --jq .body | prose-lint -
     prose-lint --adf description.json
     prose-lint --baseline old.md new.md
+    prose-lint --diff-lines 12 body.md
 """
 import argparse
 import json
 import re
 import sys
-from typing import NamedTuple
+from collections.abc import Iterator
+from typing import Final, NamedTuple
 
 
 class Finding(NamedTuple):
@@ -52,6 +62,14 @@ _TILDE_MINUS_RE = re.compile(r"~\s?[\u2212-]\s?\d")
 # Abbreviated (7-16 chars) or full (40) lowercase SHAs with at least one letter and one digit.
 _SHA_RE = re.compile(r"(?=[0-9a-f]*[a-f])(?=[0-9a-f]*[0-9])(?:[0-9a-f]{7,16}|[0-9a-f]{40})")
 _LINK_TEXT_TAIL_RE = re.compile(r"[^\[\]]*\]\(")
+
+SUMMARY_WORD_BUDGET: Final = 60
+SMALL_DIFF_LINES: Final = 50
+SMALL_DIFF_WORD_BUDGET: Final = 150
+_HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.*?)\s*$")
+_CHECKBOX_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+\[[ xX]\]\s")
+_HTML_RE = re.compile(r"<!--.*?-->|<[^>\n]+>", re.DOTALL)
+_WORD_RE = re.compile(r"[A-Za-z][\w'’-]*")
 
 
 def _excerpt(text, index, width=30):
@@ -99,10 +117,8 @@ def _line_findings(where, line):
     return findings + _prose_findings(where, prose, linked)
 
 
-def lint_markdown(text, baseline=None):
-    """Findings for Markdown text. Lines already in `baseline` are skipped."""
-    known = {line.strip() for line in baseline.splitlines() if line.strip()} if baseline else set()
-    findings = []
+def _unfenced_lines(text: str) -> Iterator[tuple[int, str]]:
+    """(line number, line) for each Markdown line outside fenced code blocks."""
     fence = None
     for number, line in enumerate(text.splitlines(), start=1):
         marker = _FENCE_RE.match(line)
@@ -113,9 +129,51 @@ def lint_markdown(text, baseline=None):
         if marker:
             fence = marker.group(1)
             continue
-        if line.strip() in known:
+        yield number, line
+
+
+def lint_markdown(text, baseline=None):
+    """Findings for Markdown text. Lines already in `baseline` are skipped."""
+    known = {line.strip() for line in baseline.splitlines() if line.strip()} if baseline else set()
+    findings = []
+    for number, line in _unfenced_lines(text):
+        if line.strip() not in known:
+            findings.extend(_line_findings(str(number), line))
+    return findings
+
+
+def word_counts(text: str) -> tuple[int, int | None]:
+    """(words in a Markdown body, words under its Summary heading, or None without one)."""
+    total = summary = 0
+    summary_depth: int | None = None
+    has_summary = False
+    for _, line in _unfenced_lines(_HTML_RE.sub(" ", text)):
+        heading = _HEADING_RE.match(line)
+        if heading:
+            depth = len(heading.group(1))
+            if summary_depth is not None and depth <= summary_depth:
+                summary_depth = None
+            if heading.group(2).lower() == "summary":
+                summary_depth, has_summary = depth, True
             continue
-        findings.extend(_line_findings(str(number), line))
+        if _REF_DEF_RE.match(line):
+            continue
+        words = len(_WORD_RE.findall(_BARE_URL_RE.sub(" ", _LINK_DEST_RE.sub("]", _CHECKBOX_RE.sub("", line)))))
+        total += words
+        if summary_depth is not None:
+            summary += words
+    return total, summary if has_summary else None
+
+
+def lint_length(text: str, diff_lines: int) -> list[Finding]:
+    """Findings when a PR body runs past the word budget for a diff that changes `diff_lines` lines."""
+    total, summary = word_counts(text)
+    findings = []
+    if summary is not None and summary > SUMMARY_WORD_BUDGET:
+        findings.append(Finding("Summary", "summary-length", f"{summary} words, budget {SUMMARY_WORD_BUDGET}"))
+    if diff_lines < SMALL_DIFF_LINES and total > SMALL_DIFF_WORD_BUDGET:
+        findings.append(Finding("total", "body-length",
+                                f"{total} words, budget {SMALL_DIFF_WORD_BUDGET} for a {diff_lines}-line diff"))
     return findings
 
 
@@ -201,9 +259,13 @@ def main(argv=None):
     ap.add_argument("files", nargs="+", metavar="FILE", help="Markdown file, ADF JSON with --adf, or '-' for stdin")
     ap.add_argument("--adf", action="store_true", help="Inputs are ADF JSON (a Jira description or comment body)")
     ap.add_argument("--baseline", metavar="OLD", help="Skip lines or blocks that OLD already has (one FILE only)")
+    ap.add_argument("--diff-lines", type=int, metavar="N",
+                    help="Also check the word budget for a PR whose diff changes N lines (Markdown only)")
     args = ap.parse_args(argv)
     if args.baseline and len(args.files) != 1:
         ap.error("--baseline takes exactly one FILE")
+    if args.adf and args.diff_lines is not None:
+        ap.error("--diff-lines checks Markdown PR bodies, not ADF")
     try:
         old = _read(args.baseline) if args.baseline else None
         total = 0
@@ -213,6 +275,8 @@ def main(argv=None):
                 findings = lint_adf(adf_doc(json.loads(text)), adf_doc(json.loads(old)) if old else None)
             else:
                 findings = lint_markdown(text, old)
+                if args.diff_lines is not None:
+                    findings += lint_length(text, args.diff_lines)
             if findings:
                 print(format_findings(findings, "<stdin>" if path == "-" else path))
             total += len(findings)
