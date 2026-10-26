@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Type-check the Python helpers in chezmoi/dot_local/bin with mypy. CI runs this too.
+# The helpers have no .py extension, so they're passed by path (a directory scan skips
+# them), and --scripts-are-modules stops mypy from naming every one of them __main__.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+helpers=()
+while IFS= read -r helper; do
+  helpers+=("$helper")
+done < <(awk 'FNR == 1 && /^#!.*python/ { print FILENAME }' chezmoi/dot_local/bin/executable_*)
+
+exec uvx mypy --python-version 3.11 --check-untyped-defs --scripts-are-modules "${helpers[@]}"
