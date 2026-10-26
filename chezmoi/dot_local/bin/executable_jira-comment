@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""jira-comment — add or edit a Jira comment from Markdown or ADF.
+
+Usage:
+    jira-comment <KEY> <file.md|-> [--edit COMMENT_ID] [--adf] [--dry-run]
+
+Markdown is converted to ADF. --adf reads ADF JSON instead: a bare document,
+or a comment payload {"body": <doc>} like the speedup-report builder writes.
+--dry-run prints method, endpoint and payload without sending a request.
+Before sending (and in --dry-run), text that isn't already in the comment
+being edited goes through `prose-lint`. Any finding stops the request.
+Fix it, or pass --no-lint for text you didn't write.
+Auth via ~/.netrc (`machine cpl-legogroup.atlassian.net`); uses `curl -n`.
+"""
+import argparse
+import importlib.util
+import json
+import subprocess
+import sys
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+from types import ModuleType
+from typing import Final
+
+BASE: Final = "https://cpl-legogroup.atlassian.net"
+
+
+def load_helper(name: str) -> ModuleType | None:
+    """A sibling helper script, by its installed or chezmoi source name, or None."""
+    here = Path(__file__).resolve().parent
+    for path in (here / name, here / f"executable_{name}"):
+        if path.is_file():
+            loader = SourceFileLoader("jira_comment_" + name.replace("-", "_"), str(path))
+            spec = importlib.util.spec_from_loader(loader.name, loader)
+            assert spec is not None
+            module = importlib.util.module_from_spec(spec)
+            loader.exec_module(module)
+            return module
+    return None
+
+
+def current_comment(key: str, comment_id: str) -> dict | None:
+    """The comment's current ADF body, or None when it can't be read."""
+    out = subprocess.run(
+        ["curl", "-n", "-sS", "--connect-timeout", "10", "--max-time", "60",
+         "-H", "Accept: application/json", "-w", "\n%{http_code}",
+         f"{BASE}/rest/api/3/issue/{key}/comment/{comment_id}"],
+        capture_output=True, text=True,
+    )
+    body, _, code = out.stdout.rpartition("\n")
+    if out.returncode or code != "200":
+        return None
+    try:
+        current = json.loads(body)["body"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return None
+    return current if isinstance(current, dict) else None
+
+
+def check_doc(doc: dict, old: dict | None) -> None:
+    """Stop when prose-lint flags text that `old` doesn't already have."""
+    lint = load_helper("prose-lint")
+    if lint is None:
+        print("jira-comment: prose-lint isn't next to this script, so the prose check was skipped", file=sys.stderr)
+        return
+    findings = lint.lint_adf(doc, baseline=old)
+    if findings:
+        sys.exit("jira-comment: prose-lint flagged the new text. Fix it, or pass --no-lint "
+                 "for text you didn't write:\n" + lint.format_findings(findings, "comment"))
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("key", help="Jira key, e.g. P11F-8060")
+    ap.add_argument("path", help="Markdown file, or - for stdin")
+    ap.add_argument("--edit", metavar="COMMENT_ID", help="Edit this comment instead of adding one")
+    ap.add_argument("--adf", action="store_true", help="Read ADF JSON instead of Markdown")
+    ap.add_argument("--dry-run", action="store_true", help="Print request without sending it")
+    ap.add_argument("--no-lint", action="store_true", help="Skip the prose-lint check, for text you didn't write")
+    args = ap.parse_args()
+    try:
+        raw = sys.stdin.read() if args.path == "-" else Path(args.path).read_text(encoding="utf-8")
+        if args.adf:
+            doc = json.loads(raw)
+            if isinstance(doc, dict) and set(doc) == {"body"}:
+                doc = doc["body"]
+        else:
+            markdown = load_helper("md2adf")
+            if markdown is None:
+                sys.exit("Markdown input needs md2adf next to this script (or pass --adf)")
+            doc = markdown.convert(raw)
+    except (OSError, json.JSONDecodeError) as error:
+        sys.exit(f"invalid input: {error}")
+    if not (isinstance(doc, dict) and doc.get("type") == "doc"):
+        sys.exit("input is not an ADF document (top-level must be {'type': 'doc', ...})")
+    if not args.no_lint:
+        check_doc(doc, current_comment(args.key, args.edit) if args.edit else None)
+    method = "PUT" if args.edit else "POST"
+    endpoint = f"{BASE}/rest/api/3/issue/{args.key}/comment"
+    if args.edit:
+        endpoint += f"/{args.edit}"
+    payload = {"body": doc}
+    if args.dry_run:
+        print(json.dumps({"method": method, "endpoint": endpoint, "payload": payload}, indent=2, ensure_ascii=False))
+        return
+    out = subprocess.run(
+        ["curl", "-n", "-sS", "--connect-timeout", "10", "--max-time", "60",
+         "-X", method, "-H", "Content-Type: application/json", "-H", "Accept: application/json",
+         "--data-binary", "@-", "-w", "\n%{http_code}", endpoint],
+        input=json.dumps(payload, ensure_ascii=False), capture_output=True, text=True,
+    )
+    if out.returncode:
+        sys.exit(f"curl failed ({out.returncode}): {out.stderr}")
+    body, _, code = out.stdout.rpartition("\n")
+    expected = "200" if args.edit else "201"
+    if code != expected:
+        sys.exit(f"HTTP {code}\n{body}")
+    try:
+        result = json.loads(body)
+    except json.JSONDecodeError:
+        sys.exit(f"HTTP {code}: non-JSON response\n{body}")
+    if not (isinstance(result, dict) and isinstance(result.get("id"), str) and result["id"]):
+        sys.exit(f"HTTP {code}: missing comment id\n{body}")
+    comment_id = result["id"]
+    if args.edit and comment_id != args.edit:
+        sys.exit(f"HTTP {code}: comment id mismatch (expected {args.edit})\n{body}")
+    print(f"{code}  {comment_id}  {BASE}/browse/{args.key}?focusedCommentId={comment_id}")
+
+
+if __name__ == "__main__":
+    main()

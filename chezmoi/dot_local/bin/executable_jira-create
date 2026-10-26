@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""jira-create — create a Jira issue with a Markdown description.
+
+Usage:
+    jira-create --summary S [--type Task] [--project P11F] [--parent KEY]
+                [--assignee me|none|ACCOUNT_ID] <file.md|-> [--dry-run]
+
+--parent only works when the parent is an Epic. A Task parent needs a Contain
+link instead; this command does not create links. Check for duplicates first.
+--dry-run prints method, endpoint and payload without sending a request.
+Before sending (and in --dry-run), the description goes through `prose-lint`.
+Any finding stops the request. Fix it, or pass --no-lint for text you didn't write.
+Auth via ~/.netrc (`machine cpl-legogroup.atlassian.net`); uses `curl -n`.
+"""
+import argparse
+import importlib.util
+import json
+import subprocess
+import sys
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+from types import ModuleType
+from typing import Final
+
+BASE: Final = "https://cpl-legogroup.atlassian.net"
+ME: Final = "712020:107a92fe-aefc-4035-8178-223e6fdc76c7"
+
+
+def load_helper(name: str) -> ModuleType | None:
+    """A sibling helper script, by its installed or chezmoi source name, or None."""
+    here = Path(__file__).resolve().parent
+    for path in (here / name, here / f"executable_{name}"):
+        if path.is_file():
+            loader = SourceFileLoader("jira_create_" + name.replace("-", "_"), str(path))
+            spec = importlib.util.spec_from_loader(loader.name, loader)
+            assert spec is not None
+            module = importlib.util.module_from_spec(spec)
+            loader.exec_module(module)
+            return module
+    return None
+
+
+def check_doc(doc: dict) -> None:
+    """Stop when prose-lint flags the description."""
+    lint = load_helper("prose-lint")
+    if lint is None:
+        print("jira-create: prose-lint isn't next to this script, so the prose check was skipped", file=sys.stderr)
+        return
+    findings = lint.lint_adf(doc)
+    if findings:
+        sys.exit("jira-create: prose-lint flagged the description. Fix it, or pass --no-lint "
+                 "for text you didn't write:\n" + lint.format_findings(findings, "description"))
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("path", help="Markdown file, or - for stdin")
+    ap.add_argument("--summary", required=True, help="Issue summary")
+    ap.add_argument("--type", default="Task", help="Issue type (default: Task)")
+    ap.add_argument("--project", default="P11F", help="Project key (default: P11F)")
+    ap.add_argument("--parent", help="Epic key; a Task parent needs a Contain link instead")
+    ap.add_argument("--assignee", default="me", help="me (default), none (unassigned), or an accountId; not an email")
+    ap.add_argument("--dry-run", action="store_true", help="Print request without sending it")
+    ap.add_argument("--no-lint", action="store_true", help="Skip the prose-lint check, for text you didn't write")
+    args = ap.parse_args()
+    if "@" in args.assignee:
+        ap.error("--assignee requires an accountId, not an email address")
+    markdown = load_helper("md2adf")
+    if markdown is None:
+        sys.exit("jira-create needs md2adf next to this script")
+    try:
+        raw = sys.stdin.read() if args.path == "-" else Path(args.path).read_text(encoding="utf-8")
+    except OSError as error:
+        sys.exit(str(error))
+    description = markdown.convert(raw)
+    if not args.no_lint:
+        check_doc(description)
+    fields = {"project": {"key": args.project}, "issuetype": {"name": args.type},
+              "summary": args.summary, "description": description,
+              "assignee": {"accountId": None if args.assignee == "none" else ME if args.assignee == "me" else args.assignee}}
+    if args.parent:
+        fields["parent"] = {"key": args.parent}
+    payload = {"fields": fields}
+    endpoint = f"{BASE}/rest/api/3/issue"
+    if args.dry_run:
+        print(json.dumps({"method": "POST", "endpoint": endpoint, "payload": payload}, indent=2, ensure_ascii=False))
+        return
+    out = subprocess.run(
+        ["curl", "-n", "-sS", "--connect-timeout", "10", "--max-time", "60",
+         "-X", "POST", "-H", "Content-Type: application/json", "-H", "Accept: application/json",
+         "--data-binary", "@-", "-w", "\n%{http_code}", endpoint],
+        input=json.dumps(payload, ensure_ascii=False), capture_output=True, text=True,
+    )
+    if out.returncode:
+        sys.exit(f"curl failed ({out.returncode}): {out.stderr}")
+    body, _, code = out.stdout.rpartition("\n")
+    if code != "201":
+        sys.exit(f"HTTP {code}\n{body}")
+    try:
+        result = json.loads(body)
+    except json.JSONDecodeError:
+        sys.exit(f"HTTP {code}: non-JSON response\n{body}")
+    if not (isinstance(result, dict) and isinstance(result.get("key"), str) and result["key"]):
+        sys.exit(f"HTTP {code}: missing issue key\n{body}")
+    key = result["key"]
+    print(f"201  {key}  {BASE}/browse/{key}")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""jira-put-description — set a Jira issue's description from an ADF file.
+"""jira-put-description — set a Jira issue's description from ADF or Markdown.
 
 Usage:
-    jira-put-description <KEY> <file.json>
-    jira-put-description <KEY> -      # read ADF from stdin
+    jira-put-description <KEY> <file.json|-> [--dry-run]
+    jira-put-description <KEY> <file.md|-> --markdown [--dry-run]
 
 The file (or stdin) must be a valid ADF document — top-level
 `{"type": "doc", "version": 1, "content": [...]}`. The script validates
@@ -11,62 +11,122 @@ JSON locally, then PUTs `{"fields": {"description": <doc>}}` to
 `/rest/api/3/issue/<KEY>`. Returns 204 on success; prints the response on
 non-204.
 
-Auth via ~/.netrc (`machine cpl-legogroup.atlassian.net`).
+--dry-run prints the exact PUT payload without sending a request.
+Before sending (and in --dry-run), text the issue's current description
+doesn't already have goes through `prose-lint`. Any finding stops the PUT.
+Fix it, or pass --no-lint for text you didn't write.
+Auth via ~/.netrc (`machine cpl-legogroup.atlassian.net`); uses `curl -n`.
 """
+import argparse
+import importlib.util
 import json
 import subprocess
 import sys
-import tempfile
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+from types import ModuleType
+from typing import Final, TypedDict
 
-BASE = "https://cpl-legogroup.atlassian.net"
+BASE: Final = "https://cpl-legogroup.atlassian.net"
 
 
-def main():
-    if len(sys.argv) != 3:
-        sys.exit(__doc__)
-    key, path = sys.argv[1], sys.argv[2]
+class Document(TypedDict):
+    type: str
+    version: int
+    content: list
 
-    raw = sys.stdin.read() if path == "-" else open(path).read()
+
+def load_helper(name: str) -> ModuleType | None:
+    """A sibling helper script, by its installed or chezmoi source name, or None."""
+    here = Path(__file__).resolve().parent
+    for path in (here / name, here / f"executable_{name}"):
+        if path.is_file():
+            loader = SourceFileLoader("jira_description_" + name.replace("-", "_"), str(path))
+            spec = importlib.util.spec_from_loader(loader.name, loader)
+            assert spec is not None
+            module = importlib.util.module_from_spec(spec)
+            loader.exec_module(module)
+            return module
+    return None
+
+
+def current_description(key: str) -> dict | None:
+    """The issue's current description, or None when it has none or can't be read."""
+    out = subprocess.run(
+        ["curl", "-n", "-sS", "--connect-timeout", "10", "--max-time", "60",
+         "-H", "Accept: application/json", "-w", "\n%{http_code}",
+         f"{BASE}/rest/api/3/issue/{key}?fields=description"],
+        capture_output=True, text=True,
+    )
+    body, _, code = out.stdout.rpartition("\n")
+    if out.returncode or code != "200":
+        return None
     try:
-        doc = json.loads(raw)
-    except json.JSONDecodeError as e:
-        sys.exit(f"input is not valid JSON: {e}")
+        description = json.loads(body)["fields"]["description"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return None
+    return description if isinstance(description, dict) else None
 
+
+def check_doc(doc: Document, old: dict | None) -> None:
+    """Stop when prose-lint flags text that `old` doesn't already have."""
+    lint = load_helper("prose-lint")
+    if lint is None:
+        print("jira-put-description: prose-lint isn't next to this script, so the prose check was skipped", file=sys.stderr)
+        return
+    findings = lint.lint_adf(doc, baseline=old)
+    if findings:
+        sys.exit("jira-put-description: prose-lint flagged the new text. Fix it, or pass --no-lint "
+                 "for text you didn't write:\n" + lint.format_findings(findings, "description"))
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("key", help="Jira key, e.g. P11F-8060")
+    ap.add_argument("path", help="ADF JSON file, or - for stdin")
+    ap.add_argument("--markdown", action="store_true", help="Convert Markdown input to ADF")
+    ap.add_argument("--dry-run", action="store_true", help="Print payload without sending a request")
+    ap.add_argument("--no-lint", action="store_true", help="Skip the prose-lint check, for text you didn't write")
+    args = ap.parse_args()
+    try:
+        raw = sys.stdin.read() if args.path == "-" else Path(args.path).read_text(encoding="utf-8")
+        if args.markdown:
+            markdown = load_helper("md2adf")
+            if markdown is None:
+                sys.exit("--markdown needs md2adf next to this script")
+            doc = markdown.convert(raw)
+        else:
+            doc = json.loads(raw)
+    except json.JSONDecodeError as error:
+        sys.exit(f"input is not valid JSON: {error}")
+    except OSError as error:
+        sys.exit(str(error))
     if not (isinstance(doc, dict) and doc.get("type") == "doc"):
         sys.exit("input is not an ADF document (top-level must be {'type': 'doc', ...})")
-
-    payload = {"fields": {"description": doc}}
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tf:
-        json.dump(payload, tf)
-        body_path = tf.name
-
+    if not args.no_lint:
+        check_doc(doc, current_description(args.key))
+    payload = json.dumps({"fields": {"description": doc}}, ensure_ascii=False)
+    if args.dry_run:
+        print(payload)
+        return
     out = subprocess.run(
         [
-            "curl", "-n", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+            "curl", "-n", "-sS", "--connect-timeout", "10", "--max-time", "60", "-w", "\n%{http_code}",
             "-X", "PUT",
             "-H", "Content-Type: application/json",
             "-H", "Accept: application/json",
-            "--data-binary", f"@{body_path}",
-            f"{BASE}/rest/api/3/issue/{key}",
+            "--data-binary", "@-",
+            f"{BASE}/rest/api/3/issue/{args.key}",
         ],
-        capture_output=True, text=True,
+        input=payload, capture_output=True, text=True,
     )
-    code = out.stdout.strip()
+    if out.returncode:
+        sys.exit(f"curl failed ({out.returncode}): {out.stderr}")
+    body, _, code = out.stdout.rpartition("\n")
     if code == "204":
-        print(f"204  {BASE}/browse/{key}")
+        print(f"204  {BASE}/browse/{args.key}")
         return
-    err = subprocess.run(
-        [
-            "curl", "-n", "-s",
-            "-X", "PUT",
-            "-H", "Content-Type: application/json",
-            "-H", "Accept: application/json",
-            "--data-binary", f"@{body_path}",
-            f"{BASE}/rest/api/3/issue/{key}",
-        ],
-        capture_output=True, text=True,
-    )
-    sys.exit(f"HTTP {code}\n{err.stdout}")
+    sys.exit(f"HTTP {code}\n{body}")
 
 
 if __name__ == "__main__":

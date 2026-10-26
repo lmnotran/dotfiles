@@ -32,7 +32,11 @@ files, authenticates, contacts GitHub/Jira, launches agents, or edits a user's r
 | `gh-review-body` | Concatenated pagination JSON, latest authored nonempty review, explicit IDs, missing matches, PUT payload, verified writes/mismatch, stdin CLI editing |
 | `gh-run-timings` | Duration units/rounding, attempt endpoint/pagination, JSON filtering/sorting/top, timestamp arithmetic, skipped-step table rows, wall-clock display, empty results |
 | `ci-sample` | Protected/detached branch refusal, cleanup dry-run, missing safe reset target, summary files with missing values/outlier median, job arithmetic, workflow resolution/ambiguity |
-| `jira-put-description` | Invalid JSON/non-document rejection before subprocess, description envelope, PUT endpoint, 204 success and non-204 failure |
+| `md2adf` | ATX headings, soft-wrapped paragraphs, mixed nested lists, fenced code, inline marks, code+link preservation, tables, quotes/rules, empty text avoidance, file/stdin CLI |
+| `jira-put-description` | Invalid JSON/non-document rejection before subprocess, Markdown/ADF input, dry-run envelope, prose-lint gate with the current description as baseline, `--no-lint`, PUT endpoint, 204 success, single-request HTTP and transport failures |
+| `jira-comment` | Markdown/ADF input, POST/PUT endpoint and body, strict success codes, required/matching comment IDs, dry run, prose-lint gate with the edited comment as baseline, HTTP/transport errors |
+| `jira-create` | Markdown description, POST envelope, defaults and project/type/parent/assignee overrides, dry run, prose-lint gate and `--no-lint`, strict 201/key validation, HTTP/transport errors |
+| `jira-search` | GET endpoint and encoded JQL/fields, token pagination, maximum count, raw issues JSON, compact/empty output, API/transport errors and repeated-token rejection |
 | `jira-view` | ADF heading/list nesting/code/quote/rule/inline marks/cards/mentions/breaks, absent descriptions, raw JSON/ADF modes, non-JSON API errors |
 | `claude-context-nudge` | Cache-token aggregation, latest usage, tier persistence/suppression/escalation, malformed JSON/transcript lines/state, environment fallback, disabled mode; no prompt prose assertions |
 | `gh-step-anchor` | In-memory attempt ZIP, matching job selection, setup/BOM/CRLF, nested markers, physical multiline numbering, skipped-step gaps, post steps, all/JSON/step filters, URL/repo arguments, ambiguous/absent/duplicate mapping, invalid ZIP; ZIP without step files: job-log split by step times across shared seconds, composite start-action/end-action markers, skipped steps, unplaceable lines, and logs that don't fit the step times |
@@ -48,9 +52,8 @@ files, authenticates, contacts GitHub/Jira, launches agents, or edits a user's r
   or force pushes. Cleanup safety and preview are tested with reads mocked and
   mutations blocked.
 - No sandbox worktree lifecycle, tmux, agents, submodules, or Jira cleanup.
-- Jira description validation currently checks only the top-level `type: doc`,
-  not the full ADF schema. Its non-204 path repeats the PUT to retrieve an error
-  body; the test mocks this existing behavior and does not endorse retry safety.
+- Jira ADF input validation checks only the top-level `type: doc`, not the full
+  ADF schema. Markdown conversion supports the documented subset, not all CommonMark.
 - Not every Jira formatted metadata field or every CLI file-input variant is
   covered. Tests target contracts rather than line coverage or implementation
   internals.

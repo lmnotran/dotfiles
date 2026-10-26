@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""jira-search — search Jira issues with paginated JQL.
+
+Usage:
+    jira-search '<JQL>' [--fields summary,status,issuetype,parent,assignee]
+                [--max N] [--json]
+
+Default output: KEY | type | status | parent | assignee | summary
+--json prints the raw issues array. Fetches at most 100 issues by default.
+Auth via ~/.netrc (`machine cpl-legogroup.atlassian.net`); uses `curl -n`.
+"""
+import argparse
+import json
+import subprocess
+import sys
+from typing import Final
+from urllib.parse import urlencode
+
+BASE: Final = "https://cpl-legogroup.atlassian.net"
+DEFAULT_FIELDS: Final = "summary,status,issuetype,parent,assignee"
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("jql", help="JQL query")
+    ap.add_argument("--fields", default=DEFAULT_FIELDS, help="Comma-separated API fields")
+    ap.add_argument("--max", type=int, default=100, help="Maximum issue count (default: 100)")
+    ap.add_argument("--json", action="store_true", help="Print raw issues array")
+    args = ap.parse_args()
+    if args.max < 1:
+        ap.error("--max must be positive")
+    issues = []
+    token = ""
+    seen: set[str] = set()
+    while len(issues) < args.max:
+        params = {"jql": args.jql, "fields": args.fields, "maxResults": str(min(100, args.max - len(issues)))}
+        if token:
+            params["nextPageToken"] = token
+        endpoint = f"{BASE}/rest/api/3/search/jql?{urlencode(params)}"
+        out = subprocess.run(
+            ["curl", "-n", "-sS", "--connect-timeout", "10", "--max-time", "60",
+             "-X", "GET", "-H", "Accept: application/json", "-w", "\n%{http_code}", endpoint],
+            capture_output=True, text=True,
+        )
+        if out.returncode:
+            sys.exit(f"curl failed ({out.returncode}): {out.stderr}")
+        body, _, code = out.stdout.rpartition("\n")
+        if code != "200":
+            sys.exit(f"HTTP {code}\n{body}")
+        try:
+            page = json.loads(body)
+        except json.JSONDecodeError:
+            sys.exit(f"HTTP {code}: non-JSON response\n{body}")
+        if not (isinstance(page, dict) and isinstance(page.get("issues"), list)):
+            sys.exit(f"HTTP {code}: missing issues array\n{body}")
+        issues.extend(page["issues"][:args.max - len(issues)])
+        if page.get("isLast") or len(issues) >= args.max:
+            break
+        token = page.get("nextPageToken")
+        if not token:
+            break
+        if not isinstance(token, str) or token in seen:
+            sys.exit("invalid or repeated nextPageToken")
+        seen.add(token)
+    if args.json:
+        print(json.dumps(issues, indent=2, ensure_ascii=False))
+        return
+    for issue in issues:
+        fields = issue.get("fields", {})
+        values = [issue["key"], (fields.get("issuetype") or {}).get("name", ""),
+                  (fields.get("status") or {}).get("name", ""), (fields.get("parent") or {}).get("key", ""),
+                  (fields.get("assignee") or {}).get("displayName", "(unassigned)"), fields.get("summary", "")]
+        print(" | ".join(" ".join(value.splitlines()) for value in values))
+
+
+if __name__ == "__main__":
+    main()
