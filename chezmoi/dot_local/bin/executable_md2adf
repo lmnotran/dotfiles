@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+"""md2adf — convert Markdown to an Atlassian Document Format document.
+
+Usage:
+    md2adf <file.md|->
+
+Supports ATX headings, paragraphs, nested bullet/ordered lists, fenced code,
+inline code, bold, italic, links, GFM tables, rules and blockquotes.
+Unrecognized syntax remains paragraph text. Prints ADF JSON to stdout.
+"""
+import argparse
+import json
+import re
+import sys
+from pathlib import Path
+from typing import Final, NotRequired, TypedDict
+
+
+class Attributes(TypedDict, total=False):
+    level: int
+    language: str
+    href: str
+    order: int
+
+
+class Mark(TypedDict):
+    type: str
+    attrs: NotRequired[Attributes]
+
+
+class Node(TypedDict):
+    type: str
+    version: NotRequired[int]
+    attrs: NotRequired[Attributes]
+    content: NotRequired[list["Node"]]
+    text: NotRequired[str]
+    marks: NotRequired[list[Mark]]
+
+
+INLINE: Final = re.compile(
+    r"\\(.)|(`+)(.+?)\2(?!`)|\[([^\]\n]*)\]\(([^\s()]*(?:\([^\s()]*\)[^\s()]*)*)\)"
+    r"|\*\*(.+?)\*\*|(?<!\w)_(\S(?:.*?\S)?)_(?!\w)|\*(\S(?:.*?\S)?)\*"
+)
+ITEM: Final = re.compile(r"^( *)([-*]|\d+\.)[ \t]+(.*)$")
+HEADING: Final = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*)|$)")
+FENCE: Final = re.compile(r"^ {0,3}(`{3,}|~{3,})([^`~]*)$")
+
+
+def inline(text: str, marks: tuple[Mark, ...] = ()) -> list[Node]:
+    """Parse inline markup; code spans retain only code and enclosing links."""
+    nodes: list[Node] = []
+
+    def literal(value: str, active: tuple[Mark, ...] = marks) -> None:
+        if value:
+            node: Node = {"type": "text", "text": value}
+            if active:
+                node["marks"] = list(active)
+            nodes.append(node)
+
+    end = 0
+    for token in INLINE.finditer(text):
+        literal(text[end:token.start()])
+        escaped, ticks, code, label, url, bold, underscore, star = token.groups()
+        if escaped is not None:
+            literal(escaped)
+        elif ticks:
+            literal(code.replace("\n", " "), tuple(m for m in marks if m["type"] == "link") + ({"type": "code"},))
+        elif label is not None:
+            nodes.extend(inline(label, marks + ({"type": "link", "attrs": {"href": url}},)))
+        elif bold is not None:
+            nodes.extend(inline(bold, marks + ({"type": "strong"},)))
+        else:
+            nodes.extend(inline(underscore if underscore is not None else star, marks + ({"type": "em"},)))
+        end = token.end()
+    literal(text[end:])
+    return nodes
+
+
+def paragraph(text: str) -> Node:
+    return {"type": "paragraph", "content": inline(text)}
+
+
+def cells(line: str) -> list[str]:
+    """Split table cells without splitting escaped pipes or code spans."""
+    return [cell.strip() for cell in re.split(r"(?<!\\)\|(?=(?:[^`]*`[^`]*`)*[^`]*$)", line.strip().strip("|"))]
+
+
+def table_start(lines: list[str], index: int) -> bool:
+    return index + 1 < len(lines) and "|" in lines[index] and all(
+        re.fullmatch(r":?-{3,}:?", cell) for cell in cells(lines[index + 1])
+    ) and len(cells(lines[index])) == len(cells(lines[index + 1]))
+
+
+def list_block(lines: list[str], index: int) -> tuple[Node, int]:
+    """Consume one indentation level, attaching nested lists to their item."""
+    first = ITEM.fullmatch(lines[index])
+    assert first is not None
+    indent = len(first[1])
+    ordered = first[2].endswith(".")
+    items: list[Node] = []
+    node: Node = {"type": "orderedList" if ordered else "bulletList", "content": items}
+    if ordered:
+        node["attrs"] = {"order": int(first[2][:-1])}
+    while index < len(lines):
+        item = ITEM.fullmatch(lines[index])
+        if item is None or len(item[1]) != indent or item[2].endswith(".") != ordered:
+            break
+        parts = [item[3]]
+        content: list[Node] = []
+        index += 1
+        while index < len(lines):
+            line = lines[index]
+            nested = ITEM.fullmatch(line)
+            if nested:
+                if len(nested[1]) <= indent:
+                    break
+                if not content:
+                    content.append(paragraph(" ".join(parts)))
+                child, index = list_block(lines, index)
+                content.append(child)
+            elif line.strip() and len(line) - len(line.lstrip()) > indent:
+                parts.append(line.strip())
+                if content:
+                    content[0] = paragraph(" ".join(parts))
+                index += 1
+            elif not line.strip() and index + 1 < len(lines) and ITEM.fullmatch(lines[index + 1]):
+                index += 1
+            else:
+                break
+        items.append({"type": "listItem", "content": content or [paragraph(" ".join(parts))]})
+    return node, index
+
+
+def blocks(lines: list[str]) -> list[Node]:
+    """Consume Markdown blocks, leaving unsupported syntax as plain text."""
+    nodes: list[Node] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if not line.strip():
+            index += 1
+            continue
+        heading = HEADING.fullmatch(line)
+        fence = FENCE.fullmatch(line)
+        if fence:
+            index += 1
+            code: list[str] = []
+            closing = re.compile(r"^ {0,3}" + re.escape(fence[1][0]) + "{" + str(len(fence[1])) + r",}\s*$")
+            while index < len(lines) and not closing.fullmatch(lines[index]):
+                code.append(lines[index])
+                index += 1
+            node: Node = {"type": "codeBlock", "content": []}
+            if fence[2].strip():
+                node["attrs"] = {"language": fence[2].strip().split()[0]}
+            if "\n".join(code):
+                node["content"] = [{"type": "text", "text": "\n".join(code)}]
+            nodes.append(node)
+            index += 1
+        elif heading:
+            nodes.append({"type": "heading", "attrs": {"level": len(heading[1])},
+                          "content": inline(re.sub(r"\s+#+\s*$", "", heading[2] or ""))})
+            index += 1
+        elif line.strip() == "---":
+            nodes.append({"type": "rule"})
+            index += 1
+        elif line.lstrip().startswith(">"):
+            quoted: list[str] = []
+            while index < len(lines) and lines[index].lstrip().startswith(">"):
+                quoted.append(re.sub(r"^\s*> ?", "", lines[index]))
+                index += 1
+            nodes.append({"type": "blockquote", "content": blocks(quoted)})
+        elif ITEM.fullmatch(line):
+            node, index = list_block(lines, index)
+            nodes.append(node)
+        elif table_start(lines, index):
+            rows: list[Node] = []
+            header = cells(line)
+            index += 2
+            values = [header]
+            while index < len(lines) and lines[index].strip() and "|" in lines[index]:
+                values.append(cells(lines[index]))
+                index += 1
+            for row_index, row in enumerate(values):
+                normalized = (row + [""] * len(header))[:len(header)]
+                rows.append({"type": "tableRow", "content": [
+                    {"type": "tableHeader" if row_index == 0 else "tableCell", "content": [paragraph(cell)]}
+                    for cell in normalized
+                ]})
+            nodes.append({"type": "table", "content": rows})
+        else:
+            text = [line.strip()]
+            index += 1
+            while index < len(lines) and lines[index].strip():
+                following = lines[index]
+                if (HEADING.fullmatch(following) or FENCE.fullmatch(following) or ITEM.fullmatch(following)
+                        or following.strip() == "---" or following.lstrip().startswith(">") or table_start(lines, index)):
+                    break
+                text.append(following.strip())
+                index += 1
+            nodes.append(paragraph(" ".join(text)))
+    return nodes
+
+
+def convert(markdown: str) -> Node:
+    return {"type": "doc", "version": 1, "content": blocks(markdown.expandtabs(4).splitlines())}
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("path", help="Markdown file, or - for stdin")
+    args = ap.parse_args()
+    try:
+        raw = sys.stdin.read() if args.path == "-" else Path(args.path).read_text(encoding="utf-8")
+    except OSError as error:
+        sys.exit(str(error))
+    print(json.dumps(convert(raw), indent=2, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()
