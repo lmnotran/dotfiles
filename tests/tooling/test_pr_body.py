@@ -140,3 +140,49 @@ def test_gh_failure_when_run_outside_repo(pr: ModuleType, monkeypatch: pytest.Mo
     # When / Then
     with pytest.raises(SystemExit, match=r"`gh pr view 17` failed \(exit 1\).*-R OWNER/REPO"):
         pr.main()
+
+
+def test_prose_lint_blocks_new_section_text(pr: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Given
+    monkeypatch.setattr(sys, "argv", ["gh-pr-body", "17", "--section", "## Test plan", "-"])
+    monkeypatch.setattr(sys, "stdin", io.StringIO("- [x] I checked it — twice."))
+    monkeypatch.setattr(pr, "fetch_body", Mock(return_value=BODY))
+    push = Mock()
+    monkeypatch.setattr(pr, "push_body", push)
+    # When / Then
+    with pytest.raises(SystemExit, match=r"prose-lint flagged(.|\n)*body:1: em-dash"):
+        pr.main()
+    push.assert_not_called()
+
+
+def test_prose_lint_skips_lines_the_section_already_has(pr: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Given
+    body = "## Summary\n\nOld line — someone else's.\n\n" + FOOTER
+    monkeypatch.setattr(sys, "argv", ["gh-pr-body", "17", "--section", "## Summary", "-"])
+    monkeypatch.setattr(sys, "stdin", io.StringIO("Old line — someone else's.\nMy new line."))
+    monkeypatch.setattr(pr, "fetch_body", Mock(return_value=body))
+    push = Mock()
+    monkeypatch.setattr(pr, "push_body", push)
+    # When
+    pr.main()
+    # Then
+    push.assert_called_once()
+
+
+@pytest.mark.parametrize("missing_lint", [False, True])
+def test_prose_lint_skipped_when_no_lint_or_missing(pr: ModuleType, monkeypatch: pytest.MonkeyPatch,
+                                                    capsys: pytest.CaptureFixture[str], missing_lint: bool) -> None:
+    # Given
+    argv = ["gh-pr-body", "17", "--edit-file", "-"] + ([] if missing_lint else ["--no-lint"])
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("Body; with a semicolon."))
+    monkeypatch.setattr(pr, "fetch_body", Mock(return_value=BODY))
+    if missing_lint:
+        monkeypatch.setattr(pr, "load_prose_lint", Mock(return_value=None))
+    push = Mock()
+    monkeypatch.setattr(pr, "push_body", push)
+    # When
+    pr.main()
+    # Then
+    push.assert_called_once()
+    assert ("prose check was skipped" in capsys.readouterr().err) == missing_lint

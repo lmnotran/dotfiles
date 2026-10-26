@@ -1,0 +1,226 @@
+#!/usr/bin/env python3
+"""prose-lint — flag mechanical prose mistakes in Markdown or a Jira ADF doc.
+
+Rules. Text in code spans, fenced code blocks, and ADF code marks or code
+blocks is skipped:
+    em-dash         "—" in prose. Use a period, or a comma for a short aside.
+    semicolon       ";" in prose. Split the sentence. "TL;DR" and HTML
+                    entities like "&amp;" are fine.
+    tilde-minus     "~−" or "~-" before a number. Write "−44%" and say
+                    "about" in words.
+    backticked-sha  (Markdown only) a commit SHA in backticks. Write it bare
+                    so GitHub links it. A SHA that is link text is fine.
+    atl-origin      "atlOrigin=" in a Jira link you wrote. Drop the tracking
+                    query. The Jira integration's "[KEY]: https://…?atlOrigin=…"
+                    footer lines are left alone.
+
+--baseline OLD skips Markdown lines, or ADF paragraphs and headings, that
+OLD already has, so only new or changed text is checked.
+
+Findings print as "<file>:<where>: <rule>: <excerpt>". Exit status is 0
+when clean, 1 with findings, and 2 on unreadable input.
+
+Examples:
+    prose-lint body.md
+    gh pr view 42 --json body --jq .body | prose-lint -
+    prose-lint --adf description.json
+    prose-lint --baseline old.md new.md
+"""
+import argparse
+import json
+import re
+import sys
+from typing import NamedTuple
+
+
+class Finding(NamedTuple):
+    where: str
+    rule: str
+    excerpt: str
+
+
+EM_DASH = "\u2014"
+_FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
+_CODE_SPAN_RE = re.compile(r"(`+)(.+?)\1")
+# "[P11F-1234]: https://...?atlOrigin=..." footer lines added by the GitHub <-> Jira integration.
+_REF_DEF_RE = re.compile(r"^\s{0,3}\[[^\]]+\]:\s*\S+")
+_LINK_DEST_RE = re.compile(r"\]\([^)\s]*\)")
+_BARE_URL_RE = re.compile(r"https?://\S+")
+_ENTITY_RE = re.compile(r"&(?:[A-Za-z]+|#\d+|#x[0-9A-Fa-f]+);")
+_TLDR_RE = re.compile(r"\btl;dr\b", re.IGNORECASE)
+_TILDE_MINUS_RE = re.compile(r"~\s?[\u2212-]\s?\d")
+# Abbreviated (7-16 chars) or full (40) lowercase SHAs with at least one letter and one digit.
+_SHA_RE = re.compile(r"(?=[0-9a-f]*[a-f])(?=[0-9a-f]*[0-9])(?:[0-9a-f]{7,16}|[0-9a-f]{40})")
+_LINK_TEXT_TAIL_RE = re.compile(r"[^\[\]]*\]\(")
+
+
+def _excerpt(text, index, width=30):
+    start = max(0, index - width)
+    end = min(len(text), index + width)
+    return ("…" if start else "") + text[start:end].strip() + ("…" if end < len(text) else "")
+
+
+def _prose_findings(where, prose, linked):
+    """Checks shared by both formats.
+
+    prose: text with code and URLs removed. linked: text with code removed but
+    link targets kept, for the atl-origin rule.
+    """
+    findings = []
+    index = prose.find(EM_DASH)
+    if index >= 0:
+        findings.append(Finding(where, "em-dash", _excerpt(prose, index)))
+    semicolons = _TLDR_RE.sub("TLDR", _ENTITY_RE.sub(" ", prose))
+    index = semicolons.find(";")
+    if index >= 0:
+        findings.append(Finding(where, "semicolon", _excerpt(semicolons, index)))
+    match = _TILDE_MINUS_RE.search(prose)
+    if match:
+        findings.append(Finding(where, "tilde-minus", _excerpt(prose, match.start())))
+    index = linked.find("atlOrigin=")
+    if index >= 0:
+        findings.append(Finding(where, "atl-origin", _excerpt(linked, index)))
+    return findings
+
+
+def _line_findings(where, line):
+    if _REF_DEF_RE.match(line):
+        return []
+    findings = []
+    for span in _CODE_SPAN_RE.finditer(line):
+        content = span.group(2).strip()
+        if not _SHA_RE.fullmatch(content):
+            continue
+        in_link_text = line.rfind("[", 0, span.start()) > line.rfind("]", 0, span.start()) and _LINK_TEXT_TAIL_RE.match(line, span.end())
+        if not in_link_text:
+            findings.append(Finding(where, "backticked-sha", span.group(0)))
+    linked = _CODE_SPAN_RE.sub(" ", line)
+    prose = _BARE_URL_RE.sub(" ", _LINK_DEST_RE.sub("]", linked))
+    return findings + _prose_findings(where, prose, linked)
+
+
+def lint_markdown(text, baseline=None):
+    """Findings for Markdown text. Lines already in `baseline` are skipped."""
+    known = {line.strip() for line in baseline.splitlines() if line.strip()} if baseline else set()
+    findings = []
+    fence = None
+    for number, line in enumerate(text.splitlines(), start=1):
+        marker = _FENCE_RE.match(line)
+        if fence:
+            if marker and marker.group(1)[0] == fence[0] and len(marker.group(1)) >= len(fence):
+                fence = None
+            continue
+        if marker:
+            fence = marker.group(1)
+            continue
+        if line.strip() in known:
+            continue
+        findings.extend(_line_findings(str(number), line))
+    return findings
+
+
+def _blocks(node):
+    """Yield (type, inline nodes) for each ADF paragraph and heading, skipping code blocks."""
+    kind = node.get("type")
+    if kind == "codeBlock":
+        return
+    if kind in ("paragraph", "heading"):
+        yield kind, node.get("content") or []
+        return
+    for child in node.get("content") or []:
+        if isinstance(child, dict):
+            yield from _blocks(child)
+
+
+def _block_parts(inlines):
+    """(prose without code, link targets, identity) for one ADF block."""
+    prose, targets, plain = [], [], []
+    for node in inlines:
+        kind = node.get("type")
+        if kind == "hardBreak":
+            prose.append(" ")
+            continue
+        if kind == "inlineCard":
+            targets.append((node.get("attrs") or {}).get("url", ""))
+            continue
+        if kind != "text":
+            continue
+        text = node.get("text", "")
+        plain.append(text)
+        marks = node.get("marks") or []
+        for mark in marks:
+            if mark.get("type") == "link":
+                targets.append((mark.get("attrs") or {}).get("href", ""))
+        if not any(mark.get("type") == "code" for mark in marks):
+            prose.append(text)
+    return "".join(prose), targets, ("".join(plain), tuple(targets))
+
+
+def lint_adf(doc, baseline=None):
+    """Findings for an ADF doc. Paragraphs and headings already in `baseline` are skipped."""
+    known = {_block_parts(inlines)[2] for _, inlines in _blocks(baseline)} if baseline else set()
+    findings = []
+    for number, (kind, inlines) in enumerate(_blocks(doc), start=1):
+        prose, targets, identity = _block_parts(inlines)
+        if identity in known:
+            continue
+        linked = " ".join([prose, *targets])
+        findings.extend(_prose_findings(f"block {number} ({kind})", _BARE_URL_RE.sub(" ", prose), linked))
+    return findings
+
+
+def adf_doc(value):
+    """The ADF doc inside a description, a comment payload {"body": ...}, or an issue payload."""
+    if isinstance(value, dict) and isinstance(value.get("body"), dict):
+        value = value["body"]
+    elif isinstance(value, dict) and isinstance(value.get("fields"), dict):
+        value = value["fields"].get("description")
+    if not (isinstance(value, dict) and value.get("type") == "doc"):
+        raise ValueError("not an ADF document (top level must be {'type': 'doc', ...})")
+    return value
+
+
+def format_findings(findings, label):
+    return "\n".join(f"{label}:{f.where}: {f.rule}: {f.excerpt}" for f in findings)
+
+
+def _read(path):
+    if path == "-":
+        return sys.stdin.read()
+    with open(path, encoding="utf-8") as handle:
+        return handle.read()
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        prog="prose-lint",
+        description=__doc__.split("\n\n", 1)[0],
+        epilog=__doc__.split("\n\n", 1)[1],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument("files", nargs="+", metavar="FILE", help="Markdown file, ADF JSON with --adf, or '-' for stdin")
+    ap.add_argument("--adf", action="store_true", help="Inputs are ADF JSON (a Jira description or comment body)")
+    ap.add_argument("--baseline", metavar="OLD", help="Skip lines or blocks that OLD already has (one FILE only)")
+    args = ap.parse_args(argv)
+    if args.baseline and len(args.files) != 1:
+        ap.error("--baseline takes exactly one FILE")
+    try:
+        old = _read(args.baseline) if args.baseline else None
+        total = 0
+        for path in args.files:
+            text = _read(path)
+            if args.adf:
+                findings = lint_adf(adf_doc(json.loads(text)), adf_doc(json.loads(old)) if old else None)
+            else:
+                findings = lint_markdown(text, old)
+            if findings:
+                print(format_findings(findings, "<stdin>" if path == "-" else path))
+            total += len(findings)
+    except (OSError, ValueError) as error:
+        print(f"prose-lint: {error}", file=sys.stderr)
+        return 2
+    return 1 if total else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
