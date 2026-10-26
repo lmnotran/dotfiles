@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Find GitHub Actions log permalinks using the run attempt's per-step ZIP logs.
+"""Find GitHub Actions log permalinks for lines in a job's log.
 
 Requires gh authentication and completed, unexpired logs. A job URL supplies its
 repository; numeric IDs use --repo, GH_REPO, or the current gh repository context.
-No timestamp or group-marker guesses are used when step logs are unavailable.
+Uses the run attempt's per-step ZIP logs when the archive has them. Otherwise it
+splits the job log by the API's whole-second step times and each step's first
+line, and skips matching lines whose step it can't pin down.
 """
 
 import argparse
@@ -11,13 +13,24 @@ import io
 import json
 import re
 import subprocess
+import sys
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
+from itertools import pairwise
+from typing import Final
 from urllib.parse import urlsplit
 from zipfile import BadZipFile, ZipFile
+
+STAMPED_LINE: Final = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.\d+)?Z ?(.*)")
+RUNNER_STEPS: Final = frozenset({"Complete job", "Initialize containers", "Stop containers"})
 
 
 class AnchorError(Exception):
     """The available input cannot identify an unambiguous log anchor."""
+
+
+class StepLogsMissing(AnchorError):
+    """The run's log archive has no per-step files for this job."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +39,14 @@ class Job:
     attempt: int
     url: str
     steps: frozenset[int]
+
+
+@dataclass(frozen=True, slots=True)
+class Step:
+    number: int
+    name: str
+    started: str  # whole UTC second, YYYY-MM-DDTHH:MM:SS
+    completed: str
 
 
 def gh(endpoint: str) -> bytes:
@@ -74,8 +95,64 @@ def step_logs(archive: ZipFile, job_log: str) -> list[tuple[int, list[str]]]:
         seen.add(number)
         result.append((number, log_lines(archive.read(member).decode("utf-8-sig"))))
     if not result:
-        raise AnchorError("per-step logs are unavailable; cannot produce a reliable line anchor")
+        raise StepLogsMissing("per-step logs are unavailable; cannot produce a reliable line anchor")
     return sorted(result)
+
+
+def opens_step(name: str, text: str) -> bool:
+    """Whether a top-level log line can be the first line of the named step."""
+    if name in RUNNER_STEPS or name.startswith("Pre "):
+        return False
+    if name.startswith("Post "):
+        return text == "Post job cleanup."
+    return text.startswith("##[group]Run ")
+
+
+def split_job_log(lines: list[str], steps: tuple[Step, ...]) -> list[tuple[int, list[str]]]:
+    """Return the lines each step certainly owns, given the steps that wrote to the log.
+
+    A step starts at a line stamped in its start second, or at the first line after the
+    previous step's end second. Of those, it must start at a line that opens_step accepts,
+    outside composite actions' start-action/end-action markers. A step that matches no
+    such line could start at any of them. Steps whose start isn't unique are left out.
+    """
+    if not lines or not steps:
+        return []
+    seconds: list[str] = []
+    top_level: list[str | None] = []
+    second, depth = "", 0
+    for line in lines:
+        match = STAMPED_LINE.match(line)
+        second, text = (match[1], match[2]) if match else (second, line)
+        if text.startswith("##[end-action"):
+            depth = max(depth - 1, 0)
+        seconds.append(second)
+        top_level.append(text if depth == 0 else None)
+        if text.startswith("##[start-action"):
+            depth += 1
+    if seconds != sorted(seconds):
+        raise AnchorError("job log timestamps are out of order; refusing to guess")
+    options = [[0]]
+    for previous, step in pairwise(steps):
+        window = range(bisect_left(seconds, step.started),
+                       min(bisect_right(seconds, previous.completed), len(lines) - 1) + 1)
+        options.append([index for index in window if (text := top_level[index]) is not None
+                        and opens_step(step.name, text)] or list(window))
+    forward: list[list[int]] = []
+    floor = -1
+    for choices in options:
+        forward.append([index for index in choices if index > floor])
+        floor = forward[-1][0] if forward[-1] else len(lines)
+    feasible: list[list[int]] = []
+    ceiling = len(lines)
+    for choices in reversed(forward):
+        feasible.insert(0, [index for index in choices if index < ceiling])
+        ceiling = feasible[0][-1] if feasible[0] else -1
+    if not all(feasible):
+        raise AnchorError("job log doesn't fit the job's step times; refusing to guess")
+    ends = [choices[0] for choices in feasible[1:]] + [len(lines)]
+    return [(step.number, lines[choices[0]:end])
+            for step, choices, end in zip(steps, feasible, ends, strict=True) if len(choices) == 1]
 
 
 def main() -> None:
@@ -100,7 +177,18 @@ def main() -> None:
         job_log = gh(f"{repo}/actions/jobs/{job_id}/logs").decode("utf-8-sig")
         endpoint = f"{repo}/actions/runs/{job.run_id}/attempts/{job.attempt}/logs"
         with ZipFile(io.BytesIO(gh(endpoint))) as archive:
-            logs = step_logs(archive, job_log)
+            try:
+                logs = step_logs(archive, job_log)
+            except StepLogsMissing:
+                lines = log_lines(job_log)
+                logs = split_job_log(lines, tuple(
+                    Step(int(step["number"]), step["name"], step["started_at"][:19], step["completed_at"][:19])
+                    for step in raw["steps"]
+                    if step["conclusion"] != "skipped" and step["started_at"] and step["completed_at"]))
+                placed = sum(bool(pattern.search(line)) for _, step_lines in logs for line in step_lines)
+                skipped = sum(bool(pattern.search(line)) for line in lines) - placed
+                if skipped:
+                    print(f"gh-step-anchor: skipped {skipped} matching line(s) it can't place in a step", file=sys.stderr)
         if any(number not in job.steps for number, _ in logs):
             raise AnchorError("archive step numbers disagree with job metadata; refusing to guess")
         matches = []

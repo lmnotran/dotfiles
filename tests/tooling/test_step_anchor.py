@@ -125,6 +125,78 @@ def test_job_target_when_repo_or_url_invalid(anchor: ModuleType, case: tuple[str
         anchor.job_target(*case)
 
 
+def stamped(second: int, *texts: str) -> str:
+    return "".join(f"2026-01-01T00:00:{second:02d}.5000000Z {text}\n" for text in texts)
+
+
+def serve_job_log(anchor: ModuleType, monkeypatch: pytest.MonkeyPatch, whole: str, times: Mapping[int, tuple[int, int, str]]) -> None:
+    steps = [{"number": number, "name": name, "conclusion": "skipped" if name == "Lint" else "success",
+              "started_at": f"2026-01-01T00:00:{start:02d}Z", "completed_at": f"2026-01-01T00:00:{end:02d}Z"}
+             for number, (start, end, name) in times.items()]
+    metadata = {"run_id": 42, "run_attempt": 2, "html_url": URL, "status": "completed", "steps": steps}
+    responses = {
+        "repos/owner/repo/actions/jobs/17": json.dumps(metadata).encode(),
+        "repos/owner/repo/actions/jobs/17/logs": whole.encode(),
+        "repos/owner/repo/actions/runs/42/attempts/2/logs": archive_bytes({"0_build.txt": whole, "build/system.txt": "Requested labels: x"}),
+    }
+    monkeypatch.setattr(anchor, "gh", Mock(side_effect=responses.__getitem__))
+
+
+# Steps share seconds, Checkout is a composite action with an inner Run line, Lint is skipped,
+# and Complete job has no known first line, so "TARGET post" can't be placed.
+JOB_LOG: Final = (
+    stamped(0, "Current runner version: '2.338.0'")
+    + stamped(1, "Complete job name: build", "##[group]Run org/checkout@v1", "##[endgroup]",
+              "##[start-action display=Fetch;id=fetch]", "##[group]Run actions/checkout@v4")
+    + stamped(2, "##[endgroup]", "TARGET inner", "##[end-action id=fetch;outcome=success]",
+              "##[group]Run make build", "##[endgroup]", "TARGET build", "##[group]Run make test", "##[endgroup]")
+    + stamped(3, "TARGET test")
+    + stamped(4, "TARGET late test", "Post job cleanup.", "TARGET post", "Cleaning up orphan processes")
+)
+STEP_TIMES: Final = {1: (0, 1, "Set up job"), 2: (1, 2, "Checkout"), 3: (2, 2, "Build"), 4: (2, 2, "Lint"),
+                     5: (2, 4, "Test"), 8: (4, 4, "Post Checkout"), 9: (4, 4, "Complete job")}
+
+
+def test_fallback_anchors_when_archive_has_no_step_files(anchor: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    # Given
+    serve_job_log(anchor, monkeypatch, JOB_LOG, STEP_TIMES)
+    monkeypatch.setattr(sys, "argv", ["gh-step-anchor", URL, "TARGET", "--all", "--json"])
+    # When
+    anchor.main()
+    # Then
+    captured = capsys.readouterr()
+    assert [(match["step"], match["line"], match["url"]) for match in json.loads(captured.out)] == [
+        (2, 6, URL + "#step:2:6"), (3, 3, URL + "#step:3:3"), (5, 3, URL + "#step:5:3"), (5, 4, URL + "#step:5:4"),
+    ]
+    assert captured.err
+
+
+def test_fallback_first_match_when_archive_has_no_step_files(anchor: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    # Given
+    serve_job_log(anchor, monkeypatch, JOB_LOG, STEP_TIMES)
+    monkeypatch.setattr(sys, "argv", ["gh-step-anchor", URL, "TARGET b"])
+    # When
+    anchor.main()
+    # Then
+    assert capsys.readouterr().out == URL + "#step:3:3\n"
+
+
+@pytest.mark.parametrize("case", [
+    (JOB_LOG, STEP_TIMES, "TARGET post"),
+    (JOB_LOG, {**STEP_TIMES, 3: (3, 3, "Build")}, "TARGET build"),
+    (stamped(1, "a") + stamped(0, "TARGET"), {1: (0, 1, "Set up job")}, "TARGET"),
+])
+def test_fallback_refuses_when_step_is_unclear_or_log_does_not_fit(anchor: ModuleType, monkeypatch: pytest.MonkeyPatch, case: tuple[str, Mapping[int, tuple[int, int, str]], str]) -> None:
+    # Given
+    whole, times, pattern = case
+    serve_job_log(anchor, monkeypatch, whole, times)
+    monkeypatch.setattr(sys, "argv", ["gh-step-anchor", URL, pattern])
+    # When / Then
+    with pytest.raises(SystemExit) as error:
+        anchor.main()
+    assert error.value.code == 1
+
+
 @pytest.mark.parametrize("payload", ["not a zip", "PK\x03\x04truncated"])
 def test_cli_when_archive_is_invalid(anchor: ModuleType, monkeypatch: pytest.MonkeyPatch, payload: str) -> None:
     # Given
