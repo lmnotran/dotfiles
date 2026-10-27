@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""gh-pr-state — print a PR's head, reviews, checks, stack, and base-branch rules in one call.
+
+Usage:
+    gh-pr-state <num>                  # a PR in this checkout's repository
+    gh-pr-state <url>                  # a PR URL, from anywhere
+    gh-pr-state <num> -R OWNER/REPO    # outside a checkout
+    gh-pr-state <num> --json           # everything as one JSON object
+
+It shows:
+- the head branch and SHA, draft state, and GitHub's merge state
+- each reviewer's latest approval or change request, marked when it's on an
+  older commit, and the reviews still requested
+- unresolved review threads, comments, and unchecked boxes in the body
+- required and other checks by result, naming the ones that didn't pass
+- the native stack the PR is in, bottom to top
+- the base branch's review rules: approvals needed, code owners, whether a
+  push dismisses approvals, and whether the branch must be up to date
+
+Reading branch protection needs admin access. Without it, the rules come from
+rulesets only, and the output says so.
+"""
+import argparse
+import json
+import re
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Final
+from urllib.parse import quote
+
+_PR_URL_RE: Final = re.compile(r"^https://github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)/?$")
+_OPEN_BOX_RE: Final = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+\[ \]\s+")
+_REVIEW_LABELS: Final = {"APPROVED": "approved", "CHANGES_REQUESTED": "changes requested", "DISMISSED": "dismissed"}
+_QUERY: Final = """
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    nameWithOwner
+    pullRequest(number: $number) {
+      number title url state isDraft body headRefName headRefOid baseRefName
+      mergeable mergeStateStatus reviewDecision
+      latestOpinionatedReviews(first: 100) { nodes { author { login } state submittedAt commit { oid } } }
+      reviewRequests(first: 100) { nodes { requestedReviewer {
+        ... on User { login } ... on Bot { login } ... on Mannequin { login } ... on Team { slug } } } }
+      reviewThreads(first: 100) { totalCount nodes { isResolved } }
+      comments(last: 1) { totalCount nodes { author { login } createdAt } }
+    }
+  }
+}
+"""
+
+
+class GhError(Exception):
+    """A gh command failed. The message is gh's own error output."""
+
+
+def gh(*args: str) -> str:
+    result = subprocess.run(["gh", *args], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise GhError(result.stderr.strip() or f"`gh {' '.join(args[:2])}` exited {result.returncode}")
+    return result.stdout
+
+
+def fetch_pr(owner: str, name: str, number: int) -> tuple[str, dict[str, Any]]:
+    """The repository's OWNER/NAME and the PR. "{owner}" and "{repo}" resolve from the checkout or GH_REPO."""
+    data = json.loads(gh("api", "graphql", "-F", f"owner={owner}", "-F", f"name={name}",
+                         "-F", f"number={number}", "-f", f"query={_QUERY}"))["data"]["repository"]
+    return data["nameWithOwner"], data["pullRequest"]
+
+
+def pr_checks(repo: str, number: int, required: bool) -> list[dict[str, str]]:
+    """Checks from `gh pr checks`, which exits nonzero while checks fail or run but still prints them."""
+    result = subprocess.run(["gh", "pr", "checks", str(number), "-R", repo, "--json", "name,workflow,bucket",
+                             *(["--required"] if required else [])], capture_output=True, text=True, check=False)
+    if result.stdout.strip():
+        return json.loads(result.stdout)
+    if re.search(r"no (required )?checks reported", result.stderr):
+        return []
+    raise GhError(result.stderr.strip() or f"`gh pr checks` exited {result.returncode}")
+
+
+def find_stack(repo: str, number: int) -> dict[str, Any] | None:
+    pages = json.loads(gh("api", f"repos/{repo}/stacks?per_page=100", "--paginate", "--slurp"))
+    stacks = [stack for page in pages for stack in page
+              if any(pr["number"] == number for pr in stack["pull_requests"])]
+    stacks.sort(key=lambda stack: not stack["open"])
+    return stacks[0] if stacks else None
+
+
+def base_rules(repo: str, base: str) -> dict[str, Any]:
+    """Review rules on the base branch, from branch protection and rulesets combined."""
+    branch = quote(base, safe="/")
+    try:
+        protection: dict[str, Any] | None = json.loads(gh("api", f"repos/{repo}/branches/{branch}/protection"))
+    except GhError as error:
+        protection = {} if "Branch not protected" in str(error) else None
+    rulesets = json.loads(gh("api", f"repos/{repo}/rules/branches/{branch}"))
+    reviews = (protection or {}).get("required_pull_request_reviews") or {}
+    status = (protection or {}).get("required_status_checks") or {}
+    rule: dict[str, Any] = next((r["parameters"] for r in rulesets if r["type"] == "pull_request"), {})
+    checks_rule: dict[str, Any] = next((r["parameters"] for r in rulesets if r["type"] == "required_status_checks"), {})
+    return {
+        "approvals": max(reviews.get("required_approving_review_count", 0),
+                         rule.get("required_approving_review_count", 0)),
+        "codeOwners": bool(reviews.get("require_code_owner_reviews") or rule.get("require_code_owner_review")),
+        "pushDismissesApprovals": bool(reviews.get("dismiss_stale_reviews") or rule.get("dismiss_stale_reviews_on_push")),
+        "lastPushApproval": bool(reviews.get("require_last_push_approval") or rule.get("require_last_push_approval")),
+        "mustBeUpToDate": bool(status.get("strict") or checks_rule.get("strict_required_status_checks_policy")),
+        "protectionReadable": protection is not None,
+    }
+
+
+def unchecked_boxes(markdown: str) -> int:
+    count, in_fence = 0, False
+    for line in markdown.splitlines():
+        if line.lstrip().startswith(("```", "~~~")):
+            in_fence = not in_fence
+        elif not in_fence and _OPEN_BOX_RE.match(line):
+            count += 1
+    return count
+
+
+def collect(owner: str, name: str, number: int) -> dict[str, Any]:
+    repo, pr = fetch_pr(owner, name, number)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        every = pool.submit(pr_checks, repo, number, False)
+        required = pool.submit(pr_checks, repo, number, True)
+        stack = pool.submit(find_stack, repo, number)
+        rules = pool.submit(base_rules, repo, pr["baseRefName"])
+
+        def outcome(future: Any) -> Any:
+            try:
+                return future.result()
+            except (GhError, json.JSONDecodeError, KeyError, TypeError) as error:
+                return {"error": str(error)}
+
+        checks, required_checks, stack_info, rules_info = (outcome(f) for f in (every, required, stack, rules))
+    if isinstance(checks, dict) or isinstance(required_checks, dict):
+        check_split = checks if isinstance(checks, dict) else required_checks
+    else:
+        required_keys = {(c["workflow"], c["name"]) for c in required_checks}
+        check_split = {"required": [c for c in checks if (c["workflow"], c["name"]) in required_keys],
+                       "other": [c for c in checks if (c["workflow"], c["name"]) not in required_keys]}
+    head = pr["headRefOid"]
+    last_comment = pr["comments"]["nodes"][-1] if pr["comments"]["nodes"] else None
+    return {
+        "repo": repo, "number": pr["number"], "title": pr["title"], "url": pr["url"], "state": pr["state"],
+        "draft": pr["isDraft"], "head": {"ref": pr["headRefName"], "sha": head}, "base": pr["baseRefName"],
+        "mergeable": pr["mergeable"], "mergeState": pr["mergeStateStatus"], "reviewDecision": pr["reviewDecision"],
+        "reviews": [{"author": (r["author"] or {}).get("login", "ghost"), "state": r["state"],
+                     "submittedAt": r["submittedAt"], "onHead": (r["commit"] or {}).get("oid") == head,
+                     "commit": (r["commit"] or {}).get("oid")} for r in pr["latestOpinionatedReviews"]["nodes"]],
+        "requested": [node["requestedReviewer"].get("login") or node["requestedReviewer"].get("slug")
+                      for node in pr["reviewRequests"]["nodes"] if node["requestedReviewer"]],
+        "unresolvedThreads": sum(not thread["isResolved"] for thread in pr["reviewThreads"]["nodes"]),
+        "comments": pr["comments"]["totalCount"],
+        "lastComment": {"author": (last_comment["author"] or {}).get("login", "ghost"),
+                        "createdAt": last_comment["createdAt"]} if last_comment else None,
+        "uncheckedBoxes": unchecked_boxes(pr["body"]),
+        "checks": check_split,
+        "stack": stack_info,
+        "baseRules": rules_info,
+    }
+
+
+def check_line(label: str, checks: list[dict[str, str]], name_buckets: tuple[str, ...]) -> list[str]:
+    counts: dict[str, int] = {}
+    for check in checks:
+        counts[check["bucket"]] = counts.get(check["bucket"], 0) + 1
+    summary = ", ".join(f"{count} {bucket}" for bucket, count in sorted(counts.items())) or "none"
+    lines = [f"{label} ({len(checks)}): {summary}"]
+    for bucket in name_buckets:
+        names = sorted({check["name"] for check in checks if check["bucket"] == bucket})
+        if names:
+            lines.append(f"  {bucket}: " + ", ".join(names))
+    return lines
+
+
+def render(state: dict[str, Any]) -> str:
+    lines = [f"PR #{state['number']}: {state['title']}",
+             f"State: {state['state'].lower()}, {'draft' if state['draft'] else 'ready for review'}. "
+             f"Merge state {state['mergeState']}, {state['mergeable'].lower()}.",
+             f"Head: {state['head']['ref']} at {state['head']['sha'][:10]}, into {state['base']}",
+             f"Reviews: {state['reviewDecision'] or 'none required'}"]
+    for review_state, label in _REVIEW_LABELS.items():
+        names = [r["author"] + ("" if r["onHead"] else f" (on {(r['commit'] or '')[:10]})")
+                 for r in state["reviews"] if r["state"] == review_state]
+        if names:
+            lines.append(f"  {label}: " + ", ".join(names))
+    if state["requested"]:
+        lines.append("  requested: " + ", ".join(state["requested"]))
+    last = state["lastComment"]
+    lines.append(f"Conversation: {state['unresolvedThreads']} unresolved threads, {state['comments']} comments"
+                 + (f" (last by {last['author']}, {last['createdAt']})" if last else "")
+                 + f", {state['uncheckedBoxes']} unchecked boxes")
+    checks = state["checks"]
+    if "error" in checks:
+        lines.append(f"Checks: unknown ({checks['error']})")
+    else:
+        lines += check_line("Required checks", checks["required"], ("fail", "cancel", "pending"))
+        lines += check_line("Other checks", checks["other"], ("fail", "cancel"))
+    stack = state["stack"]
+    if stack is None:
+        lines.append("Stack: none")
+    elif "error" in stack:
+        lines.append(f"Stack: unknown ({stack['error']})")
+    else:
+        chain = " <- ".join(f"#{pr['number']}" + (" (this)" if pr["number"] == state["number"] else "")
+                            + (" (draft)" if pr.get("draft") else "")
+                            + ("" if pr.get("state") == "open" else f" ({pr.get('state')})")
+                            for pr in stack["pull_requests"])
+        lines.append(f"Stack #{stack['number']} ({'open' if stack['open'] else 'closed'}): "
+                     f"{stack['base']['ref']} <- {chain}")
+    rules = state["baseRules"]
+    if "error" in rules:
+        lines.append(f"{state['base']} rules: unknown ({rules['error']})")
+    else:
+        approvals = rules["approvals"]
+        lines.append(f"{state['base']} rules: {approvals} approval{'' if approvals == 1 else 's'}"
+                     + (", code owners" if rules["codeOwners"] else "")
+                     + (", a push dismisses approvals" if rules["pushDismissesApprovals"] else ", approvals survive a push")
+                     + (", the last push needs its own approval" if rules["lastPushApproval"] else "")
+                     + (", must be up to date" if rules["mustBeUpToDate"] else "")
+                     + ("" if rules["protectionReadable"] else ". Branch protection isn't readable without admin, so this is rulesets only"))
+    return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(
+        prog="gh-pr-state",
+        description=__doc__.split("\n\n", 1)[0],
+        epilog=__doc__.split("\n\n", 1)[1],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument("pr", help="PR number or GitHub PR URL")
+    ap.add_argument("-R", "--repo", metavar="OWNER/REPO", help="Repository for a PR number; needed outside a checkout")
+    ap.add_argument("--json", action="store_true", help="Print everything as one JSON object")
+    args = ap.parse_args(argv)
+    url = _PR_URL_RE.match(args.pr)
+    if url:
+        repo, number = url.group(1), int(url.group(2))
+    elif args.pr.isdigit():
+        repo, number = args.repo or "{owner}/{repo}", int(args.pr)
+    else:
+        ap.error(f"not a PR number or GitHub PR URL: {args.pr!r}")
+    if not re.fullmatch(r"[^/\s]+/[^/\s]+", repo):
+        ap.error("--repo must be OWNER/REPO")
+    owner, name = repo.split("/")
+    try:
+        state = collect(owner, name, number)
+    except (GhError, json.JSONDecodeError, KeyError, TypeError) as error:
+        print(f"gh-pr-state: {error}", file=sys.stderr)
+        return 1
+    print(json.dumps(state, indent=2) if args.json else render(state))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
