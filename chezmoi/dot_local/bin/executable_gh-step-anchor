@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Find GitHub Actions log permalinks for lines in a job's log.
 
-Requires gh authentication and completed, unexpired logs. A job URL supplies its
-repository; numeric IDs use --repo, GH_REPO, or the current gh repository context.
-Uses the run attempt's per-step ZIP logs when the archive has them. Otherwise it
+Requires gh authentication, a completed job, and unexpired logs. A job URL supplies
+its repository; numeric IDs use --repo, GH_REPO, or the current gh repository context.
+Uses the run attempt's per-step ZIP logs when the archive has them. Otherwise, or
+while the rest of the run is still going and the archive doesn't exist yet, it
 splits the job log by the API's whole-second step times and each step's first
 line, and skips matching lines whose step it can't pin down.
 """
@@ -17,7 +18,7 @@ import sys
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from itertools import pairwise
-from typing import Final
+from typing import Any, Final
 from urllib.parse import urlsplit
 from zipfile import BadZipFile, ZipFile
 
@@ -31,6 +32,10 @@ class AnchorError(Exception):
 
 class StepLogsMissing(AnchorError):
     """The run's log archive has no per-step files for this job."""
+
+
+class ApiError(Exception):
+    """`gh api` failed. The message is gh's own error output."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,7 +55,11 @@ class Step:
 
 
 def gh(endpoint: str) -> bytes:
-    return subprocess.check_output(["gh", "api", endpoint], timeout=120)
+    result = subprocess.run(["gh", "api", endpoint], capture_output=True, timeout=120, check=False)
+    if result.returncode != 0:
+        message = result.stderr.decode("utf-8", "replace").strip()
+        raise ApiError(message or f"`gh api {endpoint}` exited {result.returncode}")
+    return result.stdout
 
 
 def job_target(value: str, repo: str | None) -> tuple[str, str]:
@@ -163,6 +172,20 @@ def split_job_log(lines: list[str], steps: tuple[Step, ...]) -> list[tuple[int, 
             for step, choices, end in zip(steps, feasible, ends, strict=True) if len(choices) == 1]
 
 
+def split_by_step_times(job_log: str, steps: list[dict[str, Any]], pattern: re.Pattern[str]) -> list[tuple[int, list[str]]]:
+    """split_job_log on the job's own log, noting matching lines it couldn't place."""
+    lines = log_lines(job_log)
+    logs = split_job_log(lines, tuple(
+        Step(int(step["number"]), step["name"], step["started_at"][:19], step["completed_at"][:19])
+        for step in steps
+        if step["conclusion"] != "skipped" and step["started_at"] and step["completed_at"]))
+    placed = sum(line_matches(pattern, line) for _, step_lines in logs for line in step_lines)
+    skipped = sum(line_matches(pattern, line) for line in lines) - placed
+    if skipped:
+        print(f"gh-step-anchor: skipped {skipped} matching line(s) it can't place in a step", file=sys.stderr)
+    return logs
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("job", help="job ID or GitHub Actions job URL")
@@ -184,20 +207,20 @@ def main() -> None:
         if args.step is not None and args.step not in job.steps:
             raise AnchorError(f"step {args.step} is not in this job")
         job_log = gh(f"{repo}/actions/jobs/{job_id}/logs").decode("utf-8-sig")
-        endpoint = f"{repo}/actions/runs/{job.run_id}/attempts/{job.attempt}/logs"
-        with ZipFile(io.BytesIO(gh(endpoint))) as archive:
-            try:
-                logs = step_logs(archive, job_log)
-            except StepLogsMissing:
-                lines = log_lines(job_log)
-                logs = split_job_log(lines, tuple(
-                    Step(int(step["number"]), step["name"], step["started_at"][:19], step["completed_at"][:19])
-                    for step in raw["steps"]
-                    if step["conclusion"] != "skipped" and step["started_at"] and step["completed_at"]))
-                placed = sum(line_matches(pattern, line) for _, step_lines in logs for line in step_lines)
-                skipped = sum(line_matches(pattern, line) for line in lines) - placed
-                if skipped:
-                    print(f"gh-step-anchor: skipped {skipped} matching line(s) it can't place in a step", file=sys.stderr)
+        try:
+            archive = gh(f"{repo}/actions/runs/{job.run_id}/attempts/{job.attempt}/logs")
+        except ApiError as error:
+            if "HTTP 404" not in str(error):
+                raise
+            print("gh-step-anchor: the run's log archive isn't there until the whole run finishes, "
+                  "so this splits the job log by step times", file=sys.stderr)
+            logs = split_by_step_times(job_log, raw["steps"], pattern)
+        else:
+            with ZipFile(io.BytesIO(archive)) as zip_file:
+                try:
+                    logs = step_logs(zip_file, job_log)
+                except StepLogsMissing:
+                    logs = split_by_step_times(job_log, raw["steps"], pattern)
         if any(number not in job.steps for number, _ in logs):
             raise AnchorError("archive step numbers disagree with job metadata; refusing to guess")
         matches = []
@@ -222,7 +245,7 @@ def main() -> None:
     except (AnchorError, re.error, BadZipFile, UnicodeDecodeError,
             json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
         parser.exit(1, f"gh-step-anchor: {error}\n")
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as error:
+    except (ApiError, subprocess.TimeoutExpired, OSError) as error:
         parser.exit(1, f"gh-step-anchor: unable to fetch logs: {error}\n")
 
 

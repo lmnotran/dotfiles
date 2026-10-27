@@ -1,5 +1,7 @@
 import io
 import json
+import re
+import subprocess
 import sys
 from collections.abc import Callable, Mapping
 from types import ModuleType
@@ -230,3 +232,58 @@ def test_cli_when_archive_is_invalid(anchor: ModuleType, monkeypatch: pytest.Mon
     with pytest.raises(SystemExit) as error:
         anchor.main()
     assert error.value.code == 1
+
+
+def serve_without_archive(anchor: ModuleType, monkeypatch: pytest.MonkeyPatch, archive_error: str) -> None:
+    serve_job_log(anchor, monkeypatch, JOB_LOG, STEP_TIMES)
+    served = anchor.gh.side_effect
+
+    def gh(endpoint: str) -> bytes:
+        if endpoint == "repos/owner/repo/actions/runs/42/attempts/2/logs":
+            raise anchor.ApiError(archive_error)
+        return served(endpoint)
+
+    monkeypatch.setattr(anchor, "gh", Mock(side_effect=gh))
+
+
+def test_fallback_anchors_while_the_run_is_still_going(anchor: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    # Given
+    serve_without_archive(anchor, monkeypatch, "gh: Not Found (HTTP 404)")
+    monkeypatch.setattr(sys, "argv", ["gh-step-anchor", URL, "TARGET", "--all", "--json"])
+    # When
+    anchor.main()
+    # Then
+    captured = capsys.readouterr()
+    assert [match["url"] for match in json.loads(captured.out)] == [
+        URL + "#step:2:6", URL + "#step:3:3", URL + "#step:5:3", URL + "#step:5:4",
+    ]
+    assert captured.err
+
+
+def test_cli_failure_when_the_archive_fails_for_another_reason(anchor: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    # Given
+    serve_without_archive(anchor, monkeypatch, "gh: Server Error (HTTP 502)")
+    monkeypatch.setattr(sys, "argv", ["gh-step-anchor", URL, "TARGET b"])
+    # When
+    with pytest.raises(SystemExit) as error:
+        anchor.main()
+    # Then
+    assert error.value.code == 1
+    assert "HTTP 502" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("case", [
+    (0, b"payload", b"", None),
+    (1, b"", b"gh: Not Found (HTTP 404)\n", "gh: Not Found (HTTP 404)"),
+    (1, b"", b"", "`gh api repos/owner/repo/x` exited 1"),
+])
+def test_gh_returns_stdout_or_raises_with_its_error_output(anchor: ModuleType, monkeypatch: pytest.MonkeyPatch, case: tuple[int, bytes, bytes, str | None]) -> None:
+    # Given
+    returncode, stdout, stderr, message = case
+    monkeypatch.setattr(subprocess, "run", Mock(return_value=subprocess.CompletedProcess([], returncode, stdout, stderr)))
+    # When / Then
+    if message is None:
+        assert anchor.gh("repos/owner/repo/x") == stdout
+    else:
+        with pytest.raises(anchor.ApiError, match=re.escape(message)):
+            anchor.gh("repos/owner/repo/x")
