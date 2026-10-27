@@ -39,6 +39,7 @@ When you run it from an OpenChamber terminal, step 7 closes that terminal. The s
 | `~/.local/bin/chamberctl` | [`chezmoi/dot_local/bin/executable_chamberctl`](../chezmoi/dot_local/bin/executable_chamberctl) | The control script |
 | `~/.config/openchamber/service.env` | The install script. Not in git | `OPENCHAMBER_UI_PASSWORD`, mode 600 |
 | `~/.config/opencode/opencode.json` | Not managed. The install script sets one key | `"shell": "/bin/bash"` |
+| `~/.config/opencode/plugins/agent-git-env.js` | [`chezmoi/private_dot_config/opencode/plugins/agent-git-env.js`](../chezmoi/private_dot_config/opencode/plugins/agent-git-env.js) | Turns off commit signing for agent commands, not terminals. Loads on `chamberctl restart` |
 
 `opencode.json` stays out of chezmoi because OpenCode plugin installers rewrite it.
 
