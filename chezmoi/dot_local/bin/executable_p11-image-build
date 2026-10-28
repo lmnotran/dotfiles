@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+"""p11-image-build — build firmware-developer-p11 images locally, in their own buildx builder.
+
+Usage:
+    p11-image-build [--repo DIR] [--tag TAG] [--builder NAME] [--print] IMAGE...
+    p11-image-build [--builder NAME] --du
+    p11-image-build [--builder NAME] --rm
+
+Builds each IMAGE, and every parent image it FROMs, with `docker buildx bake` in
+a docker-container builder (p11-images unless --builder says otherwise, created
+on first use). Parents are wired in as bake targets, so nothing is pulled from or
+pushed to GHCR. Each IMAGE loads into Docker as
+ghcr.io/lego-cpl/firmware-developer-p11-IMAGE:TAG, and "monolith" loads as
+ghcr.io/lego-cpl/firmware-developer-p11:TAG. TAG defaults to "local", the tag
+p11-ci-local runs by default.
+
+IMAGE names are the directories under firmware-developer-p11/ that hold a
+Dockerfile, plus "monolith". The repository defaults to the git checkout you're
+in (LEGO-CPL/p11-firmware_docker_image_builder). firmware-build-toolchain needs
+the EMM installer fetched from Git LFS.
+
+The builder holds all of the build cache. --du shows how big it is, and --rm
+deletes the builder with its cache and leaves Docker's own build cache alone.
+Images already loaded into Docker stay until you remove them.
+
+Examples:
+    p11-image-build bnsim-test unit-test
+    p11-image-build --tag try2 firmware-build
+    p11-image-build --rm
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Final
+
+REGISTRY: Final = "ghcr.io/lego-cpl/firmware-developer-p11"
+IMAGES_DIR: Final = "firmware-developer-p11"
+MONOLITH: Final = "monolith"
+DEFAULT_BUILDER: Final = "p11-images"
+DEFAULT_TAG: Final = "local"
+TAG_ARGS: Final = ("BASE_TAG", "EMM_TAG")
+PARENT_FROM: Final = re.compile(
+    r"^[ \t]*FROM[ \t]+(?:--\S+[ \t]+)*" + re.escape(REGISTRY) + r"-([a-z0-9-]+):\$\{(\w+)\}",
+    re.IGNORECASE | re.MULTILINE,
+)
+ARG_DECLARED: Final = re.compile(r"^[ \t]*ARG[ \t]+(\w+)", re.IGNORECASE | re.MULTILINE)
+
+
+class BuildError(Exception):
+    """The request can't be turned into a build."""
+
+
+@dataclass(frozen=True, slots=True)
+class Image:
+    name: str
+    dockerfile: Path
+    parents: tuple[str, ...]
+    args: frozenset[str]
+
+
+def image_ref(name: str, tag: str) -> str:
+    return f"{REGISTRY}:{tag}" if name == MONOLITH else f"{REGISTRY}-{name}:{tag}"
+
+
+def discover(repo: Path) -> dict[str, Image]:
+    root = repo / IMAGES_DIR
+    if not root.is_dir():
+        raise BuildError(f"{repo} has no {IMAGES_DIR}/ directory; pass --repo")
+    dockerfiles = {d.name: d / "Dockerfile" for d in sorted(root.iterdir()) if (d / "Dockerfile").is_file()}
+    if (root / "Dockerfile").is_file():
+        dockerfiles[MONOLITH] = root / "Dockerfile"
+    images = {}
+    for name, dockerfile in dockerfiles.items():
+        text = dockerfile.read_text()
+        parents = tuple(dict.fromkeys(match[1] for match in PARENT_FROM.finditer(text)))
+        images[name] = Image(name, dockerfile, parents, frozenset(ARG_DECLARED.findall(text)))
+    return images
+
+
+def closure(images: dict[str, Image], requested: list[str]) -> list[str]:
+    """Requested images and all of their parents, parents first."""
+    order: list[str] = []
+    visiting: set[str] = set()
+
+    def visit(name: str) -> None:
+        if name in order:
+            return
+        if name not in images:
+            raise BuildError(f"unknown image {name!r}; images: {', '.join(sorted(images))}")
+        if name in visiting:
+            raise BuildError(f"{name} is its own parent")
+        visiting.add(name)
+        for parent in images[name].parents:
+            visit(parent)
+        visiting.discard(name)
+        order.append(name)
+
+    for name in requested:
+        visit(name)
+    return order
+
+
+def bake_definition(repo: Path, images: dict[str, Image], requested: list[str], tag: str) -> dict[str, Any]:
+    context = str(repo / IMAGES_DIR)
+    targets: dict[str, Any] = {}
+    for name in closure(images, requested):
+        image = images[name]
+        target: dict[str, Any] = {
+            "context": context,
+            "dockerfile": str(image.dockerfile),
+            "args": {arg: tag for arg in TAG_ARGS if arg in image.args},
+            "contexts": {image_ref(parent, tag): f"target:{parent}" for parent in image.parents},
+            "output": ["type=docker"] if name in requested else ["type=cacheonly"],
+        }
+        if name in requested:
+            target["tags"] = [image_ref(name, tag)]
+        targets[name] = target
+    return {"target": targets}
+
+
+def docker(*args: str, check: bool = True) -> int:
+    result = subprocess.run(["docker", *args], check=False)
+    if check and result.returncode != 0:
+        raise BuildError(f"`docker {' '.join(args)}` exited {result.returncode}")
+    return result.returncode
+
+
+def ensure_builder(name: str) -> None:
+    inspect = subprocess.run(["docker", "buildx", "inspect", name], capture_output=True, check=False)
+    if inspect.returncode != 0:
+        print(f"p11-image-build: creating buildx builder {name}", file=sys.stderr)
+        docker("buildx", "create", "--name", name, "--driver", "docker-container", "--bootstrap")
+
+
+def find_repo(value: str | None) -> Path:
+    if value:
+        return Path(value).resolve()
+    result = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise BuildError("not in a git checkout; pass --repo")
+    return Path(result.stdout.strip())
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n", 1)[0],
+                                     formatter_class=argparse.RawDescriptionHelpFormatter,
+                                     epilog=(__doc__ or "").split("\n\n", 2)[-1])
+    parser.add_argument("images", nargs="*", metavar="IMAGE", help="images to build and load")
+    parser.add_argument("--repo", help="p11-firmware_docker_image_builder checkout (default: this git checkout)")
+    parser.add_argument("--tag", default=DEFAULT_TAG, help=f"tag for the loaded images (default {DEFAULT_TAG})")
+    parser.add_argument("--builder", default=DEFAULT_BUILDER, help=f"buildx builder to use (default {DEFAULT_BUILDER})")
+    parser.add_argument("--print", action="store_true", help="print the bake definition and stop")
+    parser.add_argument("--du", action="store_true", help="show the builder's disk use")
+    parser.add_argument("--rm", action="store_true", help="delete the builder and its build cache")
+    args = parser.parse_args()
+    try:
+        if args.du or args.rm:
+            if args.images:
+                raise BuildError("--du and --rm take no IMAGE")
+            sys.exit(docker("buildx", "du", "--builder", args.builder, check=False) if args.du
+                     else docker("buildx", "rm", args.builder, check=False))
+        if not args.images:
+            raise BuildError("name at least one IMAGE")
+        if args.tag == "latest" or not re.fullmatch(r"[\w][\w.-]{0,127}", args.tag):
+            raise BuildError("--tag must be a Docker tag other than latest, so local images don't shadow GHCR's :latest")
+        repo = find_repo(args.repo)
+        definition = bake_definition(repo, discover(repo), list(dict.fromkeys(args.images)), args.tag)
+        if args.print:
+            print(json.dumps(definition, indent=2))
+            return
+        ensure_builder(args.builder)
+        with tempfile.NamedTemporaryFile("w", suffix=".json", prefix="p11-image-build-") as bake_file:
+            json.dump(definition, bake_file)
+            bake_file.flush()
+            command = ["docker", "buildx", "bake", "--builder", args.builder,
+                       "--allow", f"fs.read={repo / IMAGES_DIR}", "--file", bake_file.name, *dict.fromkeys(args.images)]
+            env = {**os.environ, "BUILDX_NO_DEFAULT_ATTESTATIONS": "1"}
+            code = subprocess.run(command, env=env, check=False).returncode
+        if code == 0:
+            for name in dict.fromkeys(args.images):
+                print(f"loaded {image_ref(name, args.tag)}")
+        sys.exit(code)
+    except (BuildError, OSError) as error:
+        parser.exit(2, f"p11-image-build: {error}\n")
+
+
+if __name__ == "__main__":
+    main()
