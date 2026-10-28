@@ -287,3 +287,35 @@ def test_gh_returns_stdout_or_raises_with_its_error_output(anchor: ModuleType, m
     else:
         with pytest.raises(anchor.ApiError, match=re.escape(message)):
             anchor.gh("repos/owner/repo/x")
+
+
+@pytest.mark.parametrize("line", [
+    "\x1b[32m43 passed\x1b[0m, \x1b[33m262 deselected\x1b[0m",
+    "2026-01-01T00:00:00.1234567Z \x1b[32m43 passed\x1b[0m, \x1b[33m262 deselected\x1b[0m",
+])
+def test_line_matches_when_ansi_codes_split_the_text(anchor: ModuleType, line: str) -> None:
+    # Given
+    pattern = re.compile(r"^43 passed, 262 deselected")
+    # When
+    matched = anchor.line_matches(pattern, line)
+    # Then
+    assert matched
+
+
+def test_json_text_when_ansi_codes_in_line(anchor: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Given
+    whole = "##[group]Run pytest\n2026-01-01T00:00:00Z \x1b[32m43 passed\x1b[0m, \x1b[33m262 deselected\x1b[0m\n"
+    metadata = {"run_id": 42, "run_attempt": 1, "html_url": URL, "status": "completed", "steps": [{"number": 1}]}
+    responses = {
+        "repos/owner/repo/actions/jobs/17": json.dumps(metadata).encode(),
+        "repos/owner/repo/actions/jobs/17/logs": whole.encode(),
+        "repos/owner/repo/actions/runs/42/attempts/1/logs": archive_bytes({"-1_test.txt": whole, "test/1_Run pytest.txt": whole}),
+    }
+    monkeypatch.setattr(anchor, "gh", Mock(side_effect=responses.__getitem__))
+    output = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", output)
+    monkeypatch.setattr(sys, "argv", ["gh-step-anchor", URL, "43 passed, 262 deselected", "--json"])
+    # When
+    anchor.main()
+    # Then
+    assert json.loads(output.getvalue()) == [{"step": 1, "line": 2, "text": "2026-01-01T00:00:00Z 43 passed, 262 deselected", "url": URL + "#step:1:2"}]
