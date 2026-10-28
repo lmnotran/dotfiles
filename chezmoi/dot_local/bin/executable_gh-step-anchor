@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 from zipfile import BadZipFile, ZipFile
 
 STAMPED_LINE: Final = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.\d+)?Z ?(.*)")
+ANSI_ESCAPE: Final = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 RUNNER_STEPS: Final = frozenset({"Complete job", "Initialize containers", "Stop containers"})
 
 
@@ -83,10 +84,15 @@ def log_lines(text: str) -> list[str]:
 
 
 def line_matches(pattern: re.Pattern[str], line: str) -> bool:
-    """Whether the pattern matches the line, or the line's text after GitHub's timestamp."""
-    if pattern.search(line):
+    """Whether the pattern matches the line, or the line's text after GitHub's timestamp.
+
+    ANSI color codes are removed first: tools like pytest color parts of a line, so
+    "43 passed, 262 deselected" has escape codes between its words in the raw log.
+    """
+    plain = ANSI_ESCAPE.sub("", line)
+    if pattern.search(plain):
         return True
-    stamped = STAMPED_LINE.match(line)
+    stamped = STAMPED_LINE.match(plain)
     return bool(stamped and pattern.search(stamped[2]))
 
 
@@ -190,7 +196,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("job", help="job ID or GitHub Actions job URL")
     parser.add_argument("pattern", help="regular expression to find in the log. Each line is tried with and "
-                                        "without GitHub's leading timestamp, so ^ anchors to the log text")
+                                        "without GitHub's leading timestamp, so ^ anchors to the log text. "
+                                        "ANSI color codes are removed before matching")
     parser.add_argument("-R", "--repo", help="OWNER/REPO for a numeric job ID")
     parser.add_argument("--step", type=int, help="restrict to this API/UI step number")
     parser.add_argument("--all", action="store_true", help="print every matching line, not just the first")
@@ -229,7 +236,7 @@ def main() -> None:
                 continue
             for line_number, line in enumerate(lines, 1):
                 if line_matches(pattern, line):
-                    matches.append({"step": number, "line": line_number, "text": line,
+                    matches.append({"step": number, "line": line_number, "text": ANSI_ESCAPE.sub("", line),
                                     "url": f"{job.url.split('#')[0]}#step:{number}:{line_number}"})
                     if not args.all:
                         break
