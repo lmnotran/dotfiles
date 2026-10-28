@@ -1,0 +1,186 @@
+#!/usr/bin/env python3
+"""gh-run-failures — what broke in each failed job of a GitHub Actions run.
+
+Usage:
+    gh-run-failures <run-id-or-url> [-R OWNER/REPO] [--wait SECONDS]
+                                    [--attempt N] [--lines N]
+
+For each failed job, prints its name, a link to its first failed step, and the
+log lines that say what broke: pytest's short test summary and final count,
+compiler, linker, and CMake errors, the last line of Python tracebacks, and
+`##[error]` annotations. Timestamps, ANSI color codes, and the runner's
+workspace prefix are stripped. Nested jobs from reusable workflows are included.
+
+--wait polls until the run finishes or SECONDS pass, so one call replaces a
+sleep-and-check loop. Exit status: 0 when the run finished with no failed job,
+1 when a job failed, 2 when the run is still going, 3 when the run can't be read.
+
+Examples:
+    gh-run-failures 40752533386 -R LEGO-CPL/p11-firmware
+    gh-run-failures https://github.com/LEGO-CPL/p11-firmware/actions/runs/40752533386
+    gh-run-failures 40752533386 --wait 110
+"""
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from typing import Any, Final
+
+FAILED: Final = frozenset({"failure", "timed_out", "startup_failure"})
+POLL_SECONDS: Final = 15
+STAMPED: Final = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ?(.*)")
+ANSI_ESCAPE: Final = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+WORKSPACE: Final = re.compile(r"(?:/__w|/home/runner/work)/[^/\s]+/[^/\s]+/")
+PYTEST_RESULT: Final = re.compile(r"^=+ (.*\b(?:failed|errors?)\b.* in [0-9.]+s.*?) =+$")
+PROBLEM: Final = re.compile(
+    r"\b(?:fatal )?error: "          # gcc, clang, ld, ninja tools
+    r"|^CMake Error"
+    r"|undefined reference to "
+    r"|^ERROR: "                      # docker buildx, many CLIs
+    r"|^(?:[\w.]+\.)?\w*(?:Error|Exception): "  # last line of a Python traceback
+)
+MAX_LINE: Final = 300
+
+
+class ApiError(Exception):
+    """`gh api` failed. The message is gh's own error output."""
+
+
+@dataclass(frozen=True, slots=True)
+class Target:
+    repo: str  # OWNER/REPO, or gh's {owner}/{repo} placeholder
+    run_id: str
+
+
+def gh(*args: str) -> str:
+    result = subprocess.run(["gh", "api", *args], capture_output=True, text=True, timeout=120, check=False)
+    if result.returncode != 0:
+        raise ApiError(result.stderr.strip() or f"`gh api {' '.join(args)}` exited {result.returncode}")
+    return result.stdout
+
+
+def parse_target(value: str, repo: str | None) -> Target:
+    if value.isdecimal():
+        return Target(repo or "{owner}/{repo}", value)
+    match = re.search(r"github\.com/([\w.-]+/[\w.-]+)/actions/runs/(\d+)", value)
+    if not match:
+        raise ValueError(f"expected a run ID or a GitHub Actions run URL, got: {value}")
+    if repo and repo.lower() != match[1].lower():
+        raise ValueError("--repo conflicts with the run URL's repository")
+    return Target(match[1], match[2])
+
+
+def fetch_run(target: Target) -> dict[str, Any]:
+    run: dict[str, Any] = json.loads(gh(f"repos/{target.repo}/actions/runs/{target.run_id}"))
+    return run
+
+
+def fetch_jobs(target: Target, attempt: int | None) -> list[dict[str, Any]]:
+    path = f"repos/{target.repo}/actions/runs/{target.run_id}"
+    path += f"/attempts/{attempt}/jobs" if attempt is not None else "/jobs"
+    out = gh(f"{path}?per_page=100", "--paginate", "--jq", ".jobs[]")
+    return [json.loads(line) for line in out.splitlines() if line.strip()]
+
+
+def clean(line: str) -> str:
+    line = ANSI_ESCAPE.sub("", line.lstrip("\ufeff")).rstrip()
+    stamped = STAMPED.match(line)
+    text = stamped[1] if stamped else line
+    text = WORKSPACE.sub("", text)
+    return text if len(text) <= MAX_LINE else text[:MAX_LINE - 1] + "…"
+
+
+def failure_lines(log: str, limit: int) -> list[str]:
+    """The lines of a job log that say what broke, in log order, without repeats."""
+    found: list[str] = []
+    annotations: list[str] = []
+    in_summary = False
+    for raw in log.replace("\r\n", "\n").split("\n"):
+        text = clean(raw)
+        if "short test summary info" in text:
+            in_summary = True
+            continue
+        if in_summary:
+            if text.startswith(("FAILED ", "ERROR ")):
+                found.append(text)
+                continue
+            in_summary = False
+        result = PYTEST_RESULT.match(text)
+        if result:
+            found.append(result[1])
+        elif text.startswith("##[error]"):
+            annotations.append(text)
+        elif PROBLEM.search(text):
+            found.append(text)
+    lines = list(dict.fromkeys(found + annotations))
+    if len(lines) > limit:
+        return lines[:limit - 1] + [f"… {len(lines) - limit + 1} more"]
+    return lines
+
+
+def first_failed_step(job: dict[str, Any]) -> tuple[str, str]:
+    url = str(job.get("html_url") or "")
+    for step in job.get("steps") or []:
+        if step.get("conclusion") in FAILED:
+            return f"{url}#step:{step['number']}:1", str(step.get("name", ""))
+    return url, ""
+
+
+def report(target: Target, run: dict[str, Any], jobs: list[dict[str, Any]], limit: int) -> int:
+    failed = [job for job in jobs if job.get("conclusion") in FAILED]
+    running = [job for job in jobs if job.get("status") != "completed"]
+    cancelled = [job for job in jobs if job.get("conclusion") == "cancelled"]
+    status = run.get("status", "?")
+    summary = f"{status} {run.get('conclusion') or ''}".strip()
+    print(f"{run.get('name', 'run')} {target.run_id}: {summary}, {len(failed)} of {len(jobs)} jobs failed")
+    for job in failed:
+        link, step = first_failed_step(job)
+        print(f"\nFAIL {job.get('name', job.get('id'))}")
+        print(f"     {link}" + (f" ({step})" if step else ""))
+        try:
+            log = gh(f"repos/{target.repo}/actions/jobs/{job['id']}/logs")
+        except ApiError as error:
+            print(f"     (log unavailable: {error})")
+            continue
+        for line in failure_lines(log, limit) or ["(no error lines found; open the link)"]:
+            print(f"     {line}")
+    if cancelled:
+        print(f"\n{len(cancelled)} cancelled: " + ", ".join(str(job.get("name")) for job in cancelled[:5])
+              + (" …" if len(cancelled) > 5 else ""))
+    if status != "completed":
+        names = ", ".join(str(job.get("name")) for job in running[:5]) + (" …" if len(running) > 5 else "")
+        print(f"\n{len(running)} jobs still running" + (f": {names}" if running else ""))
+        return 2
+    return 1 if failed else 0
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n", 1)[0],
+                                     formatter_class=argparse.RawDescriptionHelpFormatter,
+                                     epilog=(__doc__ or "").split("\n\n", 2)[-1])
+    parser.add_argument("run", help="run ID or GitHub Actions run URL")
+    parser.add_argument("-R", "--repo", help="OWNER/REPO for a numeric run ID (default: gh's repository context)")
+    parser.add_argument("--wait", type=int, default=0, metavar="SECONDS",
+                        help="poll until the run finishes, for at most SECONDS")
+    parser.add_argument("--attempt", type=int, help="report this run attempt instead of the latest")
+    parser.add_argument("--lines", type=int, default=8, help="most error lines to print per job (default 8)")
+    args = parser.parse_args()
+    try:
+        target = parse_target(args.run, args.repo)
+        deadline = time.monotonic() + args.wait
+        run = fetch_run(target)
+        while run.get("status") != "completed" and time.monotonic() < deadline:
+            time.sleep(min(POLL_SECONDS, max(deadline - time.monotonic(), 0.0)))
+            run = fetch_run(target)
+        code = report(target, run, fetch_jobs(target, args.attempt), max(args.lines, 1))
+    except (ApiError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired, OSError) as error:
+        parser.exit(3, f"gh-run-failures: {error}\n")
+    sys.exit(code)
+
+
+if __name__ == "__main__":
+    main()
