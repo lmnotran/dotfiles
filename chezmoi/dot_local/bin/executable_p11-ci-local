@@ -1,0 +1,194 @@
+#!/usr/bin/env python3
+"""p11-ci-local — run a command in a firmware-developer-p11 image against a p11-firmware checkout, set up like CI.
+
+Usage:
+    p11-ci-local [--tag TAG] [--checkout DIR] [--init-submodules] IMAGE [-- COMMAND...]
+
+IMAGE is a split image name like bnsim-test, which runs
+ghcr.io/lego-cpl/firmware-developer-p11-IMAGE:TAG ("monolith" runs
+ghcr.io/lego-cpl/firmware-developer-p11:TAG), or any full image reference. TAG
+defaults to "local", the tag p11-image-build gives the images it builds; pass a
+commit SHA to run an image CI pushed. With no COMMAND it opens a shell.
+
+The checkout (default: the git checkout you're in, worktrees included) mounts at
+CI's path, /__w/p11-firmware/p11-firmware, and the command runs there as you, so
+what it builds stays yours. The container gets what CI's container jobs have:
+  - CI=true, GITHUB_WORKSPACE, P11_DISABLE_GIT_SUBMODULE_UPDATE=1, and
+    GIT_BUILD_VERSION, GIT_BRANCH and GIT_COMMIT_ID, worked out from the checkout
+    the way audiobrick.yml's git_info job does.
+  - jf on PATH with your ~/.jfrog, and pip pointed at Artifactory the way CI's
+    Setup Artifactory step does it (jf pip-config --repo-resolve=cpl-pypi-virtual).
+    The .jfrog/ that this writes into the checkout is removed afterwards, unless
+    it was already there.
+  - uv on PATH.
+  - HOME under ~/.cache/p11-ci-local, so pip and uv caches last between runs.
+
+In a worktree, git commands that recurse into submodules (git status, git
+describe --dirty) fail inside the container: a worktree's submodules find the
+main checkout by relative paths, which CI's path breaks. Run those on the host.
+CMake reads its version from the GIT_* variables, so builds don't need them.
+
+--init-submodules first checks out every submodule, recursively and at depth 1, on
+the host. That works for a new worktree even when the main checkout's submodules
+are shallow.
+
+Examples:
+    p11-image-build bnsim-test
+    p11-ci-local bnsim-test -- 'python3 -m venv build_env && . build_env/bin/activate && jf pip install -r build-requirements.txt'
+    p11-ci-local unit-test -- '. build_env/bin/activate && cmake --preset ctest-simulator && cmake --build build/ctest-simulator'
+    p11-ci-local --tag 61ba269706f5ccc29c11b2195e7d98913118090b firmware-build
+"""
+
+import argparse
+import json
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Final
+
+REGISTRY: Final = "ghcr.io/lego-cpl/firmware-developer-p11"
+DEFAULT_TAG: Final = "local"
+WORKSPACE: Final = "/__w/p11-firmware/p11-firmware"
+CONTAINER_HOME: Final = "/tmp/p11-ci-home"
+LINUXBREW: Final = "/home/linuxbrew/.linuxbrew"
+PIP_REPO: Final = "cpl-pypi-virtual"
+VERSION_MATCH: Final = ("--match", "v[0-9]*.[0-9]*.[0-9]*", "--exclude", "*/*")
+
+
+class SetupError(Exception):
+    """The container can't be set up as asked."""
+
+
+def resolve_image(image: str, tag: str) -> str:
+    if "/" in image or ":" in image:
+        return image
+    return f"{REGISTRY}:{tag}" if image == "monolith" else f"{REGISTRY}-{image}:{tag}"
+
+
+def git(checkout: Path, *args: str) -> str:
+    result = subprocess.run(["git", "-C", str(checkout), *args], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise SetupError(f"`git {' '.join(args)}` failed: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
+def git_env(checkout: Path) -> dict[str, str]:
+    """GIT_BUILD_VERSION, GIT_BRANCH and GIT_COMMIT_ID, as audiobrick.yml's git_info job computes them."""
+    commit = git(checkout, "rev-parse", "--short", "HEAD")
+    try:
+        version = git(checkout, "describe", "--tags", "--dirty", *VERSION_MATCH)
+    except SetupError:
+        version = f"v0.0.0-0-g{commit}"
+    return {"GIT_BUILD_VERSION": version, "GIT_BRANCH": git(checkout, "rev-parse", "--abbrev-ref", "HEAD"),
+            "GIT_COMMIT_ID": commit}
+
+
+def default_jf_server(jfrog: Path) -> str | None:
+    """The default server ID in the JFrog CLI config, or the first one."""
+    for config in sorted(jfrog.glob("jfrog-cli.conf.v*"), reverse=True):
+        try:
+            servers = json.loads(config.read_text()).get("servers") or []
+        except (OSError, ValueError, AttributeError):
+            continue
+        ids = [server.get("serverId") for server in servers if isinstance(server, dict)]
+        defaults = [server.get("serverId") for server in servers if isinstance(server, dict) and server.get("isDefault")]
+        for server_id in defaults + ids:
+            if isinstance(server_id, str) and server_id:
+                return server_id
+    return None
+
+
+def docker_command(image: str, checkout: Path, common_dir: Path, home: Path, env: dict[str, str],
+                   jf: Path | None, jf_server: str | None, jfrog: Path | None, uv: Path | None,
+                   command: str | None, tty: bool) -> list[str]:
+    mounts = [f"{checkout}:{WORKSPACE}", f"{home}:{CONTAINER_HOME}"]
+    if not common_dir.is_relative_to(checkout):
+        mounts.append(f"{common_dir}:{common_dir}")  # a worktree's .git file points here
+    setup = ["set -e"]
+    if jf is not None:
+        if str(jf).startswith(LINUXBREW + "/"):
+            mounts.append(f"{LINUXBREW}:{LINUXBREW}:ro")  # its ELF interpreter lives here too
+            setup.append(f'export PATH="$PATH:{shlex.quote(str(jf.parent))}"')
+        else:
+            mounts.append(f"{jf}:/usr/local/bin/jf:ro")
+        if jfrog is not None:
+            mounts.append(f"{jfrog}:{CONTAINER_HOME}/.jfrog")
+            if jf_server:
+                setup.append(f"jf pip-config --repo-resolve={PIP_REPO} --server-id-resolve={shlex.quote(jf_server)} >/dev/null")
+    if uv is not None:
+        mounts.append(f"{uv}:/usr/local/bin/uv:ro")
+    setup.append("set +e")
+    script = "\n".join(setup + [command if command is not None else "exec bash -i"])
+    argv = ["docker", "run", "--rm", "-i"] + (["-t"] if tty else [])
+    argv += ["--user", f"{os.getuid()}:{os.getgid()}", "-w", WORKSPACE]
+    for name, value in {"HOME": CONTAINER_HOME, "CI": "true", "GITHUB_WORKSPACE": WORKSPACE,
+                        "P11_DISABLE_GIT_SUBMODULE_UPDATE": "1", **env}.items():
+        argv += ["-e", f"{name}={value}"]
+    for mount in mounts:
+        argv += ["-v", mount]
+    return argv + ["--entrypoint", "bash", image, "-c", script]
+
+
+def which(name: str) -> Path | None:
+    found = shutil.which(name)
+    return Path(found).resolve() if found else None
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n", 1)[0],
+                                     formatter_class=argparse.RawDescriptionHelpFormatter,
+                                     epilog=(__doc__ or "").split("\n\n", 2)[-1])
+    parser.add_argument("image", metavar="IMAGE", help="split image name (bnsim-test, unit-test, ...) or full image reference")
+    parser.add_argument("command", nargs=argparse.REMAINDER, metavar="-- COMMAND",
+                        help="command to run in the checkout (one argument is run by bash as is)")
+    parser.add_argument("--tag", default=DEFAULT_TAG, help=f"image tag for a split image name (default {DEFAULT_TAG})")
+    parser.add_argument("--checkout", help="p11-firmware checkout or worktree (default: this git checkout)")
+    parser.add_argument("--init-submodules", action="store_true",
+                        help="check out every submodule recursively at depth 1 before running")
+    args = parser.parse_args()
+    words = args.command[1:] if args.command[:1] == ["--"] else args.command
+    command = None if not words else words[0] if len(words) == 1 else shlex.join(words)
+    try:
+        checkout = Path(args.checkout).resolve() if args.checkout else Path(git(Path.cwd(), "rev-parse", "--show-toplevel"))
+        if not (checkout / "CMakePresets.json").is_file():
+            raise SetupError(f"{checkout} doesn't look like a p11-firmware checkout (no CMakePresets.json)")
+        image = resolve_image(args.image, args.tag)
+        inspect = subprocess.run(["docker", "image", "inspect", image], capture_output=True, check=False)
+        if inspect.returncode != 0 and image.endswith(":" + DEFAULT_TAG):
+            raise SetupError(f"no local image {image}; build it with `p11-image-build {args.image}`")
+        if args.init_submodules:
+            init = subprocess.run(["git", "-C", str(checkout), "submodule", "update", "--init", "--recursive",
+                                   "--depth", "1", "--jobs", "4"], check=False)
+            if init.returncode != 0:
+                raise SetupError("git submodule update failed")
+        common_dir = Path(git(checkout, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+        cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+        home = cache / "p11-ci-local" / "home"
+        home.mkdir(parents=True, exist_ok=True)
+        jf, uv = which("jf"), which("uv")
+        jfrog = Path.home() / ".jfrog"
+        if jfrog.is_dir():
+            (home / ".jfrog").mkdir(exist_ok=True)  # else Docker creates the mount point as root
+        jf_server = default_jf_server(jfrog) if jfrog.is_dir() else None
+        if jf is None or jf_server is None:
+            print("p11-ci-local: no jf or JFrog server config; pip won't go through Artifactory", file=sys.stderr)
+        argv = docker_command(image, checkout, common_dir, home, git_env(checkout), jf, jf_server,
+                              jfrog if jfrog.is_dir() else None, uv, command,
+                              tty=sys.stdin.isatty() and sys.stdout.isatty())
+        project_jfrog = checkout / ".jfrog"
+        had_project_jfrog = project_jfrog.exists()
+        try:
+            code = subprocess.run(argv, check=False).returncode
+        finally:
+            if not had_project_jfrog and project_jfrog.is_dir():
+                shutil.rmtree(project_jfrog, ignore_errors=True)
+    except (SetupError, OSError) as error:
+        parser.exit(2, f"p11-ci-local: {error}\n")
+    sys.exit(code)
+
+
+if __name__ == "__main__":
+    main()
