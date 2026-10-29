@@ -1,4 +1,5 @@
 import io
+import json
 import subprocess
 import sys
 from collections.abc import Callable
@@ -23,6 +24,7 @@ def create(tool: Callable[[str], ModuleType], monkeypatch: pytest.MonkeyPatch, t
     monkeypatch.setattr(module, "repo_info", Mock(return_value=("p11-firmware", "master")))
     monkeypatch.setattr(module, "diff_lines", Mock(return_value=12))
     monkeypatch.setattr(module, "git", Mock(return_value=f"{tmp_path}\n"))
+    monkeypatch.setattr(module, "post_remote_link", Mock(return_value="208848"))
     return module
 
 
@@ -118,6 +120,76 @@ def test_fails_loudly_when_the_live_body_differs(create: ModuleType, gh: Mock, m
     # When / Then
     with pytest.raises(SystemExit, match="doesn't match"):
         open_pr(create, monkeypatch)
+    create.post_remote_link.assert_not_called()
+
+
+def test_links_the_pr_on_the_jira_issue_in_its_title(create: ModuleType, gh: Mock, monkeypatch: pytest.MonkeyPatch,
+                                                      capsys: pytest.CaptureFixture[str]) -> None:
+    # When
+    open_pr(create, monkeypatch)
+    # Then
+    create.post_remote_link.assert_called_once_with("P11F-1234", URL, f"{TITLE} #9")
+    out, err = capsys.readouterr()
+    assert out == URL + "\n" and "linked the PR on P11F-1234 (remote link 208848)" in err
+
+
+def test_a_title_without_a_jira_key_links_nothing(create: ModuleType, gh: Mock, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Given
+    monkeypatch.setattr(create, "repo_info", Mock(return_value=("dotfiles", "main")))
+    # When
+    open_pr(create, monkeypatch, title="fix: tidy the prompt")
+    # Then
+    create.post_remote_link.assert_not_called()
+
+
+def test_dry_run_names_the_issue_it_would_link(create: ModuleType, gh: Mock, monkeypatch: pytest.MonkeyPatch,
+                                               capsys: pytest.CaptureFixture[str]) -> None:
+    # When
+    open_pr(create, monkeypatch, "--dry-run")
+    # Then
+    create.post_remote_link.assert_not_called()
+    assert "would link the PR on P11F-1234" in capsys.readouterr().out
+
+
+def test_a_failed_link_still_prints_the_url(create: ModuleType, gh: Mock, monkeypatch: pytest.MonkeyPatch,
+                                           capsys: pytest.CaptureFixture[str]) -> None:
+    # Given
+    monkeypatch.setattr(create, "post_remote_link", Mock(side_effect=SystemExit("gh-pr-create: HTTP 403")))
+    # When / Then
+    with pytest.raises(SystemExit, match="HTTP 403"):
+        open_pr(create, monkeypatch)
+    assert capsys.readouterr().out == URL + "\n"
+
+
+@pytest.mark.parametrize("code", ["201", "200"])
+def test_post_remote_link_uses_the_pr_url_as_its_global_id(tool: Callable[[str], ModuleType],
+                                                           monkeypatch: pytest.MonkeyPatch, code: str) -> None:
+    # Given Jira creates the link (201), or updates the one with the same globalId (200)
+    module = tool("gh-pr-create")
+    curl = Mock(return_value=subprocess.CompletedProcess([], 0, stdout=f'{{"id":208848,"self":"x"}}\n{code}'))
+    monkeypatch.setattr(subprocess, "run", curl)
+    # When
+    link_id = module.post_remote_link("P11F-1234", URL, f"{TITLE} #9")
+    # Then
+    command = curl.call_args.args[0]
+    assert command[:2] == ["curl", "-n"] and command[-1].endswith("/rest/api/3/issue/P11F-1234/remotelink")
+    assert json.loads(curl.call_args.kwargs["input"]) == {"globalId": URL, "object": {"url": URL, "title": f"{TITLE} #9"}}
+    assert link_id == "208848"
+
+
+@pytest.mark.parametrize(("result", "message"), [
+    (subprocess.CompletedProcess([], 0, stdout='{"errorMessages":["nope"]}\n403'), "HTTP 403"),
+    (subprocess.CompletedProcess([], 0, stdout="<html>\n200"), "HTTP 200"),
+    (subprocess.CompletedProcess([], 6, stdout="", stderr="Could not resolve host"), "curl exit 6"),
+])
+def test_post_remote_link_stops_on_a_failure(tool: Callable[[str], ModuleType], monkeypatch: pytest.MonkeyPatch,
+                                             result: subprocess.CompletedProcess, message: str) -> None:
+    # Given
+    module = tool("gh-pr-create")
+    monkeypatch.setattr(subprocess, "run", Mock(return_value=result))
+    # When / Then
+    with pytest.raises(SystemExit, match=message):
+        module.post_remote_link("P11F-1234", URL, f"{TITLE} #9")
 
 
 def test_diff_lines_counts_text_changes_against_the_fetched_base(tool: Callable[[str], ModuleType],

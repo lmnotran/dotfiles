@@ -22,6 +22,12 @@ before the PR exists, and any failure stops it:
 Then `gh pr create` opens the PR, the body is re-fetched and compared, and
 the PR URL is printed. The Jira integration's footer can land on the PR in
 between, so the comparison leaves footers out.
+
+When the title ends in a Jira key, the PR then goes on that issue as a remote
+link titled "<PR title> #<number>", with Jira auth from ~/.netrc like the
+jira-* helpers. The PR URL is the link's globalId, so posting the same PR
+again updates that link instead of adding a second one. If the link fails,
+the PR URL is still printed and the exit status is 1.
 """
 import argparse
 import importlib.util
@@ -37,7 +43,9 @@ from typing import Final
 
 _TITLE_RE: Final = re.compile(r"^(?P<comps>[A-Z][A-Z0-9_]*(?:, ?[A-Z][A-Z0-9_]*)*): (?P<desc>.+) \([A-Z][A-Z0-9]+-\d+\)$")
 _KNOWN_RE: Final = re.compile(r"^KNOWN_COMPONENTS\s*=\s*\{(?P<names>.*?)\}", re.MULTILINE | re.DOTALL)
+_JIRA_KEY_RE: Final = re.compile(r"\((?P<key>[A-Z][A-Z0-9]+-\d+)\)$")
 COMPONENTS_FILE: Final = Path("scripts/changelog/our_github.py")
+JIRA: Final = "https://cpl-legogroup.atlassian.net"
 
 
 def load_helper(name: str) -> ModuleType:
@@ -100,6 +108,27 @@ def title_problems(title: str, known: frozenset[str] | None) -> list[str]:
     return problems
 
 
+def post_remote_link(key: str, url: str, title: str) -> str:
+    """Put `url` on Jira issue `key` as a remote link, and return the link's ID."""
+    payload = {"globalId": url, "object": {"url": url, "title": title}}
+    out = subprocess.run(
+        ["curl", "-n", "-sS", "--connect-timeout", "10", "--max-time", "60",
+         "-X", "POST", "-H", "Content-Type: application/json", "-H", "Accept: application/json",
+         "--data-binary", "@-", "-w", "\n%{http_code}", f"{JIRA}/rest/api/3/issue/{key}/remotelink"],
+        input=json.dumps(payload), capture_output=True, text=True,
+    )
+    if out.returncode:
+        sys.exit(f"gh-pr-create: linking the PR on {key} failed: curl exit {out.returncode}: {out.stderr.strip()}")
+    body, _, code = out.stdout.rpartition("\n")
+    try:
+        link_id = json.loads(body)["id"] if code in ("200", "201") else None
+    except (json.JSONDecodeError, KeyError, TypeError):
+        link_id = None
+    if link_id is None:
+        sys.exit(f"gh-pr-create: linking the PR on {key} failed: HTTP {code}\n{body}")
+    return str(link_id)
+
+
 def run(args: argparse.Namespace) -> None:
     lint, pr_body = load_helper("prose-lint"), load_helper("gh-pr-body")
     body = sys.stdin.read() if args.body_file == "-" else Path(args.body_file).read_text()
@@ -127,14 +156,20 @@ def run(args: argparse.Namespace) -> None:
     command = ["gh", "pr", "create", "--title", args.title, "--base", base, "--body-file", "-"]
     if not args.ready:
         command.append("--draft")
+    jira = _JIRA_KEY_RE.search(args.title)
     if args.dry_run:
         print("would run: " + shlex.join(command))
+        if jira:
+            print(f"would link the PR on {jira['key']}")
         return
     url = subprocess.run(command, input=body, text=True, capture_output=True, check=True).stdout.strip().splitlines()[-1]
     sent, live = (pr_body.normalize(pr_body.split_footer(text)[0]) for text in (body, pr_body.fetch_body(url)))
     if sent != live:
         sys.exit(f"gh-pr-create: opened {url}, but its body doesn't match what was sent. Compare with `gh-pr-body {url}`.")
-    print(url)
+    print(url, flush=True)
+    if jira:
+        link_id = post_remote_link(jira["key"], url, f"{args.title} #{url.rstrip('/').rsplit('/', 1)[-1]}")
+        print(f"gh-pr-create: linked the PR on {jira['key']} (remote link {link_id})", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> None:
