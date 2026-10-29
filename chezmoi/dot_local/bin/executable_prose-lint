@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """prose-lint — flag mechanical prose mistakes in Markdown or a Jira ADF doc.
 
-Rules. Text in code spans, fenced code blocks, and ADF code marks or code
-blocks is skipped:
+Rules. Text in code spans, fenced code blocks, HTML <pre> blocks, and ADF code
+marks or code blocks is skipped:
     em-dash         "—" in prose. Use a period, or a comma for a short aside.
     semicolon       ";" in prose. Split the sentence. "TL;DR" and HTML
                     entities like "&amp;" are fine.
@@ -19,8 +19,10 @@ deleted lines). gh-pr-create and gh-pr-body pass it:
     summary-length  more than 60 words under the "## Summary" heading.
     body-length     more than 150 words in the body when the diff changes
                     fewer than 50 lines.
-Word counts skip headings, fenced code, HTML, link targets, bare URLs,
-checkbox markers, and the Jira footer's reference lines.
+Word counts skip headings, fenced code and <pre> blocks, HTML, link targets,
+bare URLs, checkbox markers, and the Jira footer's reference lines. Put a
+table whose rows link their sources in a <pre> block: fenced code can't hold
+links.
 
 --baseline OLD skips Markdown lines, or ADF paragraphs and headings, that
 OLD already has, so only new or changed text is checked.
@@ -51,6 +53,8 @@ class Finding(NamedTuple):
 
 EM_DASH = "\u2014"
 _FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
+# An HTML <pre> block, which GitHub renders like fenced code but which can hold <a href> links.
+_PRE_BLOCK_RE = re.compile(r"^ {0,3}<pre\b.*?</pre>[^\n]*", re.DOTALL | re.IGNORECASE | re.MULTILINE)
 _CODE_SPAN_RE = re.compile(r"(`+)(.+?)\1")
 # "[P11F-1234]: https://...?atlOrigin=..." footer lines added by the GitHub <-> Jira integration.
 _REF_DEF_RE = re.compile(r"^\s{0,3}\[[^\]]+\]:\s*\S+")
@@ -117,10 +121,15 @@ def _line_findings(where, line):
     return findings + _prose_findings(where, prose, linked)
 
 
+def _blank_pre_blocks(text: str) -> str:
+    """`text` with each <pre> block turned into empty lines, so later line numbers hold."""
+    return _PRE_BLOCK_RE.sub(lambda block: "\n" * block.group(0).count("\n"), text)
+
+
 def _unfenced_lines(text: str) -> Iterator[tuple[int, str]]:
-    """(line number, line) for each Markdown line outside fenced code blocks."""
+    """(line number, line) for each Markdown line outside fenced code and <pre> blocks."""
     fence = None
-    for number, line in enumerate(text.splitlines(), start=1):
+    for number, line in enumerate(_blank_pre_blocks(text).splitlines(), start=1):
         marker = _FENCE_RE.match(line)
         if fence:
             if marker and marker.group(1)[0] == fence[0] and len(marker.group(1)) >= len(fence):
@@ -147,7 +156,7 @@ def word_counts(text: str) -> tuple[int, int | None]:
     total = summary = 0
     summary_depth: int | None = None
     has_summary = False
-    for _, line in _unfenced_lines(_HTML_RE.sub(" ", text)):
+    for _, line in _unfenced_lines(_HTML_RE.sub(" ", _blank_pre_blocks(text))):
         heading = _HEADING_RE.match(line)
         if heading:
             depth = len(heading.group(1))

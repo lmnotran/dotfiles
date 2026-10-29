@@ -56,6 +56,12 @@ def test_fenced_code_skipped_until_matching_fence(lint: ModuleType) -> None:
     assert [(finding.where, finding.rule) for finding in findings] == [("7", "em-dash")]
 
 
+def test_pre_block_skipped_and_later_line_numbers_hold(lint: ModuleType) -> None:
+    text = 'Intro.\n<pre class="x">\nrow; one — data\n<a href="https://x.invalid/a;b">abc</a>\n</pre>\nAfter — this.\n'
+    findings = lint.lint_markdown(text)
+    assert [(finding.where, finding.rule) for finding in findings] == [("6", "em-dash")]
+
+
 def test_baseline_skips_lines_it_already_has(lint: ModuleType) -> None:
     old = "Kept line — from someone else.\n"
     new = "Kept line — from someone else.\nMy new line; with a problem.\n"
@@ -158,6 +164,17 @@ def test_word_count_skips_what_reviewers_do_not_read(lint: ModuleType) -> None:
     )
     # When / Then
     assert lint.word_counts(body) == (7, 3)
+
+
+def test_word_count_skips_a_pre_block_like_fenced_code(lint: ModuleType) -> None:
+    # Given an evidence table whose rows link their sources
+    body = (
+        "## Summary\n\nOne two three.\n\n<pre>\nbuild       union tag order\n"
+        '<a href="https://github.com/o/r/actions/runs/1/job/2#step:10:35">696a4a17b1</a>  VERSIONINFO  CORECHUNK\n'
+        "</pre>\n\nFour five.\n"
+    )
+    # When / Then
+    assert lint.word_counts(body) == (5, 5)
 
 
 def test_cli_diff_lines_adds_the_word_budget(lint: ModuleType, tmp_path: Path,
