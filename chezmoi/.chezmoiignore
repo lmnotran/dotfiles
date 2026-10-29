@@ -4,3 +4,9 @@
 .config/opencode/opencode.jsonc
 .omo
 {{- end }}
+
+{{- /* The OpenChamber systemd user service and chamberctl only run on Linux. */ -}}
+{{- if eq .chezmoi.os "darwin" }}
+.config/systemd
+.local/bin/chamberctl
+{{- end }}
