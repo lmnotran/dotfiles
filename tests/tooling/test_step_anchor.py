@@ -68,7 +68,7 @@ def test_all_matches_when_nested_groups_skipped_gaps_post_and_multiline(anchor: 
     assert json.loads(output.getvalue()) == [
         {"step": 1, "line": 2, "text": "TARGET setup", "url": URL + "#step:1:2"},
         {"step": 3, "line": 3, "text": "TARGET build", "url": URL + "#step:3:3"},
-        {"step": 3, "line": 5, "text": "TARGET continuation", "url": URL + "#step:3:5"},
+        {"step": 3, "line": 6, "text": "TARGET continuation", "url": URL + "#step:3:6"},
         {"step": 7, "line": 2, "text": "TARGET post", "url": URL + "#step:7:2"},
     ]
 
@@ -180,7 +180,7 @@ def test_fallback_anchors_when_archive_has_no_step_files(anchor: ModuleType, mon
     # Then
     captured = capsys.readouterr()
     assert [(match["step"], match["line"], match["url"]) for match in json.loads(captured.out)] == [
-        (2, 4, URL + "#step:2:4"), (3, 2, URL + "#step:3:2"), (5, 2, URL + "#step:5:2"), (5, 3, URL + "#step:5:3"),
+        (2, 6, URL + "#step:2:6"), (3, 3, URL + "#step:3:3"), (5, 3, URL + "#step:5:3"), (5, 4, URL + "#step:5:4"),
     ]
     assert captured.err
 
@@ -192,7 +192,7 @@ def test_fallback_first_match_when_archive_has_no_step_files(anchor: ModuleType,
     # When
     anchor.main()
     # Then
-    assert capsys.readouterr().out == URL + "#step:3:2\n"
+    assert capsys.readouterr().out == URL + "#step:3:3\n"
 
 
 @pytest.mark.parametrize("pattern", ["^TARGET b", r"^2026-01-01T00:00:02\.5000000Z TARGET build$"])
@@ -203,7 +203,7 @@ def test_fallback_caret_anchors_after_timestamp(anchor: ModuleType, monkeypatch:
     # When
     anchor.main()
     # Then
-    assert capsys.readouterr().out == URL + "#step:3:2\n"
+    assert capsys.readouterr().out == URL + "#step:3:3\n"
 
 
 @pytest.mark.parametrize("case", [
@@ -247,7 +247,7 @@ def test_fallback_anchors_when_a_step_runs_a_local_action(anchor: ModuleType, mo
     # When
     anchor.main()
     # Then
-    assert [(match["step"], match["line"]) for match in json.loads(capsys.readouterr().out)] == [(2, 2), (3, 11), (4, 2)]
+    assert [(match["step"], match["line"]) for match in json.loads(capsys.readouterr().out)] == [(2, 3), (3, 15), (4, 3)]
 
 
 @pytest.mark.parametrize("payload", ["not a zip", "PK\x03\x04truncated"])
@@ -283,7 +283,7 @@ def test_fallback_anchors_while_the_run_is_still_going(anchor: ModuleType, monke
     # Then
     captured = capsys.readouterr()
     assert [match["url"] for match in json.loads(captured.out)] == [
-        URL + "#step:2:4", URL + "#step:3:2", URL + "#step:5:2", URL + "#step:5:3",
+        URL + "#step:2:6", URL + "#step:3:3", URL + "#step:5:3", URL + "#step:5:4",
     ]
     assert captured.err
 
@@ -330,14 +330,23 @@ def test_line_matches_when_ansi_codes_split_the_text(anchor: ModuleType, line: s
     assert matched
 
 
-def test_line_numbers_skip_the_markers_the_log_viewer_hides(anchor: ModuleType) -> None:
-    # Given
-    lines = ["2026-01-01T00:00:00.5000000Z ##[group]Run make", "2026-01-01T00:00:00.5000000Z ##[endgroup]",
-             "##[start-action display=Build;id=build]", "##[end-action id=build;outcome=success]", "TARGET"]
+def test_line_numbers_count_the_markers_the_log_viewer_hides(anchor: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    # Given: GitHub resolves #step:N:L by physical line. Its log viewer hides these markers and
+    # shows TARGET as line 3, but a link to line 3 lands on the start-action line.
+    step = ("##[group]Run make\n##[endgroup]\n##[start-action display=Build;id=build]\n"
+            "##[end-action id=build;outcome=success]\nTARGET\n")
+    metadata = {"run_id": 42, "run_attempt": 1, "html_url": URL, "status": "completed", "steps": [{"number": 1}]}
+    responses = {
+        "repos/owner/repo/actions/jobs/17": json.dumps(metadata).encode(),
+        "repos/owner/repo/actions/jobs/17/logs": step.encode(),
+        "repos/owner/repo/actions/runs/42/attempts/1/logs": archive_bytes({"-1_build.txt": step, "build/1_Run make.txt": step}),
+    }
+    monkeypatch.setattr(anchor, "gh", Mock(side_effect=responses.__getitem__))
+    monkeypatch.setattr(sys, "argv", ["gh-step-anchor", URL, "^TARGET"])
     # When
-    numbered = list(anchor.numbered(lines))
+    anchor.main()
     # Then
-    assert numbered == [(1, lines[0]), (2, lines[2]), (3, lines[4])]
+    assert capsys.readouterr().out == URL + "#step:1:5\n"
 
 
 def test_json_text_when_ansi_codes_in_line(anchor: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:

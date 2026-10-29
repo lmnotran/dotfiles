@@ -6,8 +6,10 @@ its repository; numeric IDs use --repo, GH_REPO, or the current gh repository co
 Uses the run attempt's per-step ZIP logs when the archive has them. Otherwise, or
 while the rest of the run is still going and the archive doesn't exist yet, it
 splits the job log by the API's whole-second step times and each step's first
-line, and skips matching lines whose step it can't pin down. Line numbers are the
-ones GitHub's log viewer shows, which skip ##[endgroup] and ##[end-action] lines.
+line, and skips matching lines whose step it can't pin down. Line numbers count
+every line of the step's log, including the ##[endgroup] and ##[end-action] lines
+the log viewer hides, because that's how GitHub resolves #step:N:L links. The
+number the viewer shows next to a line can be lower.
 """
 
 import argparse
@@ -17,7 +19,6 @@ import re
 import subprocess
 import sys
 from bisect import bisect_left, bisect_right
-from collections.abc import Iterator
 from dataclasses import dataclass
 from itertools import pairwise
 from typing import Any, Final
@@ -27,8 +28,6 @@ from zipfile import BadZipFile, ZipFile
 STAMPED_LINE: Final = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.\d+)?Z ?(.*)")
 ANSI_ESCAPE: Final = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 RUNNER_STEPS: Final = frozenset({"Complete job", "Initialize containers", "Stop containers"})
-# GitHub's log viewer hides these lines and doesn't give them line numbers.
-HIDDEN_MARKERS: Final = ("##[endgroup]", "##[end-action")
 PREPARE_ACTIONS: Final = "Prepare all required actions"
 # What the runner prints between PREPARE_ACTIONS and the Run line of a step that runs a
 # local action (actions/runner's ActionManager.cs).
@@ -88,19 +87,10 @@ def job_target(value: str, repo: str | None) -> tuple[str, str]:
 
 
 def log_lines(text: str) -> list[str]:
+    # GitHub's #step:N:L links count every physical line, including the ##[endgroup] and
+    # ##[end-action] lines its log viewer hides and leaves out of the numbers it shows.
     lines = text.lstrip("\ufeff").replace("\r\n", "\n").split("\n")
     return lines[:-1] if lines[-1] == "" else lines
-
-
-def numbered(lines: list[str]) -> Iterator[tuple[int, str]]:
-    """Each line GitHub's log viewer shows, with the number it shows next to it."""
-    number = 0
-    for line in lines:
-        stamped = STAMPED_LINE.match(line)
-        if (stamped[2] if stamped else line).startswith(HIDDEN_MARKERS):
-            continue
-        number += 1
-        yield number, line
 
 
 def line_matches(pattern: re.Pattern[str], line: str) -> bool:
@@ -209,8 +199,8 @@ def split_by_step_times(job_log: str, steps: list[dict[str, Any]], pattern: re.P
         Step(int(step["number"]), step["name"], step["started_at"][:19], step["completed_at"][:19])
         for step in steps
         if step["conclusion"] != "skipped" and step["started_at"] and step["completed_at"]))
-    placed = sum(line_matches(pattern, line) for _, step_lines in logs for _, line in numbered(step_lines))
-    skipped = sum(line_matches(pattern, line) for _, line in numbered(lines)) - placed
+    placed = sum(line_matches(pattern, line) for _, step_lines in logs for line in step_lines)
+    skipped = sum(line_matches(pattern, line) for line in lines) - placed
     if skipped:
         print(f"gh-step-anchor: skipped {skipped} matching line(s) it can't place in a step", file=sys.stderr)
     return logs
@@ -258,7 +248,7 @@ def main() -> None:
         for number, lines in logs:
             if args.step is not None and number != args.step:
                 continue
-            for line_number, line in numbered(lines):
+            for line_number, line in enumerate(lines, 1):
                 if line_matches(pattern, line):
                     matches.append({"step": number, "line": line_number, "text": ANSI_ESCAPE.sub("", line),
                                     "url": f"{job.url.split('#')[0]}#step:{number}:{line_number}"})
