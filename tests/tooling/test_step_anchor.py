@@ -222,6 +222,34 @@ def test_fallback_refuses_when_step_is_unclear_or_log_does_not_fit(anchor: Modul
     assert error.value.code == 1
 
 
+# Set up job prepares the job's actions too. Setup runs a local composite action: its step opens with
+# the runner preparing the actions the composite uses, and the composite's own Run line follows in the
+# same second.
+LOCAL_ACTION_LOG: Final = (
+    stamped(0, "Current runner version: '2.338.0'", "Prepare all required actions", "Getting action download info",
+            "Download action repository 'org/checkout@v1' (SHA:abc)")
+    + stamped(1, "Complete job name: build", "##[group]Run org/checkout@v1", "##[endgroup]", "TARGET checkout")
+    + stamped(2, "Prepare all required actions", "Getting action download info",
+              "##[group]Download immutable action package 'org/cache@v2'", "Version: 2.0.0", "##[endgroup]",
+              "Download action repository 'org/uv@v7' (SHA:def)", "##[group]Run ./.github/actions/setup", "env:",
+              "##[endgroup]", "##[start-action display=Setup uv;id=setup.uv]", "##[group]Run org/uv@v7", "##[endgroup]",
+              "##[end-action id=setup.uv;outcome=success]", "##[start-action display=Install;id=setup.install]",
+              "TARGET install", "##[end-action id=setup.install;outcome=success]")
+    + stamped(3, "##[group]Run make", "##[endgroup]", "TARGET make")
+)
+
+
+def test_fallback_anchors_when_a_step_runs_a_local_action(anchor: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    # Given
+    serve_job_log(anchor, monkeypatch, LOCAL_ACTION_LOG,
+                  {1: (0, 1, "Set up job"), 2: (1, 2, "Checkout"), 3: (2, 2, "Setup"), 4: (3, 3, "Build")})
+    monkeypatch.setattr(sys, "argv", ["gh-step-anchor", URL, "TARGET", "--all", "--json"])
+    # When
+    anchor.main()
+    # Then
+    assert [(match["step"], match["line"]) for match in json.loads(capsys.readouterr().out)] == [(2, 2), (3, 11), (4, 2)]
+
+
 @pytest.mark.parametrize("payload", ["not a zip", "PK\x03\x04truncated"])
 def test_cli_when_archive_is_invalid(anchor: ModuleType, monkeypatch: pytest.MonkeyPatch, payload: str) -> None:
     # Given

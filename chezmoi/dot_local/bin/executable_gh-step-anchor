@@ -29,6 +29,12 @@ ANSI_ESCAPE: Final = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 RUNNER_STEPS: Final = frozenset({"Complete job", "Initialize containers", "Stop containers"})
 # GitHub's log viewer hides these lines and doesn't give them line numbers.
 HIDDEN_MARKERS: Final = ("##[endgroup]", "##[end-action")
+PREPARE_ACTIONS: Final = "Prepare all required actions"
+# What the runner prints between PREPARE_ACTIONS and the Run line of a step that runs a
+# local action (actions/runner's ActionManager.cs).
+PREPARE_DETAILS: Final = ("Getting action download info", "Download action repository ",
+                          "##[group]Download immutable action package ", "Version: ", "Digest: ",
+                          "Source commit SHA: ", "##[endgroup]", "##[debug]")
 
 
 class AnchorError(Exception):
@@ -142,7 +148,7 @@ def opens_step(name: str, text: str) -> bool:
         return False
     if name.startswith("Post "):
         return text == "Post job cleanup."
-    return text.startswith("##[group]Run ")
+    return text.startswith("##[group]Run ") or text == PREPARE_ACTIONS
 
 
 def split_job_log(lines: list[str], steps: tuple[Step, ...]) -> list[tuple[int, list[str]]]:
@@ -150,21 +156,25 @@ def split_job_log(lines: list[str], steps: tuple[Step, ...]) -> list[tuple[int, 
 
     A step starts at a line stamped in its start second, or at the first line after the
     previous step's end second. Of those, it must start at a line that opens_step accepts,
-    outside composite actions' start-action/end-action markers. A step that matches no
-    such line could start at any of them. Steps whose start isn't unique are left out.
+    outside composite actions' start-action/end-action markers. A step that runs a local
+    action starts where the runner prepares its actions, and the Run line after that
+    preparation belongs to the same step. A step that matches no such line could start
+    at any of them. Steps whose start isn't unique are left out.
     """
     if not lines or not steps:
         return []
     seconds: list[str] = []
-    top_level: list[str | None] = []
-    second, depth = "", 0
+    openers: list[str | None] = []
+    second, depth, preparing = "", 0, False
     for line in lines:
         match = STAMPED_LINE.match(line)
         second, text = (match[1], match[2]) if match else (second, line)
         if text.startswith("##[end-action"):
             depth = max(depth - 1, 0)
         seconds.append(second)
-        top_level.append(text if depth == 0 else None)
+        prepared_run = preparing and text.startswith("##[group]Run ")
+        openers.append(text if depth == 0 and not prepared_run else None)
+        preparing = depth == 0 and (text == PREPARE_ACTIONS or (preparing and text.startswith(PREPARE_DETAILS)))
         if text.startswith("##[start-action"):
             depth += 1
     if seconds != sorted(seconds):
@@ -173,7 +183,7 @@ def split_job_log(lines: list[str], steps: tuple[Step, ...]) -> list[tuple[int, 
     for previous, step in pairwise(steps):
         window = range(bisect_left(seconds, step.started),
                        min(bisect_right(seconds, previous.completed), len(lines) - 1) + 1)
-        options.append([index for index in window if (text := top_level[index]) is not None
+        options.append([index for index in window if (text := openers[index]) is not None
                         and opens_step(step.name, text)] or list(window))
     forward: list[list[int]] = []
     floor = -1
