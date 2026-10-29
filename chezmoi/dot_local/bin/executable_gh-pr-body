@@ -16,8 +16,9 @@ Usage:
 
 Prose check:
 - Before pushing, the replacement text goes through `prose-lint` (em dashes,
-  semicolons, "~−", backticked SHAs, "atlOrigin=" links). Lines the PR body
-  already had are skipped, so only new or changed text is checked.
+  semicolons, "~−", backticked SHAs, "atlOrigin=" links, list items over 35
+  words). Lines the PR body already had are skipped, so only new or changed
+  text is checked.
 - Any finding stops the edit. Fix it, or pass --no-lint for text you didn't
   write. Without `prose-lint` next to this script, the check is skipped
   with a note.

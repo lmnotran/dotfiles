@@ -69,6 +69,42 @@ def test_baseline_skips_lines_it_already_has(lint: ModuleType) -> None:
     assert [(finding.where, finding.rule) for finding in findings] == [("2", "semicolon")]
 
 
+@pytest.mark.parametrize("marker", ["- ", "* ", "1. ", "- [x] ", "  - "])
+def test_bullet_length_flags_a_list_item_over_the_limit(lint: ModuleType, marker: str) -> None:
+    # Given a list item one word over the limit
+    line = marker + "word " * 36
+    # When
+    findings = lint.lint_markdown(line)
+    # Then
+    assert [(finding.where, finding.rule, finding.excerpt) for finding in findings] == [
+        ("1", "bullet-length", "36 words, limit 35"),
+    ]
+
+
+def test_bullet_length_counts_words_like_the_word_budget(lint: ModuleType) -> None:
+    # Given an item at the limit once its checkbox marker, link target, and bare URL are skipped
+    line = "- [x] " + "word " * 34 + "([log](https://github.com/o/r/actions/runs/1/job/2#step:5:304)) https://x.invalid/a/b/c"
+    # When / Then
+    assert lint.lint_markdown(line) == []
+
+
+def test_bullet_length_skips_paragraph_lines(lint: ModuleType) -> None:
+    # Given a long line that isn't a list item
+    line = "word " * 50
+    # When / Then
+    assert lint.lint_markdown(line) == []
+
+
+def test_bullet_length_skips_a_long_item_the_baseline_already_has(lint: ModuleType) -> None:
+    # Given a body whose long first item was already there and whose long second item is new
+    old = "- " + "kept " * 40 + "\n"
+    new = old + "- " + "added " * 40 + "\n"
+    # When
+    findings = lint.lint_markdown(new, baseline=old)
+    # Then
+    assert [(finding.where, finding.rule) for finding in findings] == [("2", "bullet-length")]
+
+
 def paragraph(*inlines: dict) -> dict:
     return {"type": "paragraph", "content": list(inlines)}
 
@@ -108,6 +144,13 @@ def test_adf_baseline_skips_unchanged_blocks(lint: ModuleType) -> None:
     new = doc(paragraph(text("Old — kept.")), paragraph(text("New — flagged.")))
     findings = lint.lint_adf(new, baseline=old)
     assert [(finding.where, finding.rule) for finding in findings] == [("block 2 (paragraph)", "em-dash")]
+
+
+def test_adf_list_items_have_no_length_limit(lint: ModuleType) -> None:
+    # Given a Jira description with a 50-word bullet
+    document = doc({"type": "bulletList", "content": [{"type": "listItem", "content": [paragraph(text("word " * 50))]}]})
+    # When / Then
+    assert lint.lint_adf(document) == []
 
 
 @pytest.mark.parametrize("wrap", [lambda d: d, lambda d: {"body": d}, lambda d: {"fields": {"description": d}}])
