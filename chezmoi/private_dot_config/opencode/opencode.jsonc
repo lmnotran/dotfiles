@@ -1,0 +1,25 @@
+{
+  "plugin": ["oh-my-openagent@latest"],
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "mason",
+  "instructions": ["~/.claude/CLAUDE.md"],
+  "permission": {
+    "external_directory": {
+      "/tmp": "allow",
+      "/tmp/**": "allow",
+      "/private/tmp": "allow",
+      "/private/tmp/**": "allow"
+    },
+    // Claude desktop skills that Claude Code syncs into ~/.claude/skills/synced.
+    // They need browser, desktop, or connector tools that OpenCode doesn't have.
+    "skill": {
+      "built-in-browser": "deny",
+      "chrome-browser": "deny",
+      "computer-use": "deny",
+      "docs": "deny",
+      "google-workspace": "deny",
+      "import-memory": "deny",
+      "morning": "deny"
+    }
+  }
+}
