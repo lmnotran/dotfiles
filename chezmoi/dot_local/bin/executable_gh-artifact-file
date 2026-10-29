@@ -1,0 +1,262 @@
+#!/usr/bin/env python3
+"""gh-artifact-file — print a file from GitHub Actions artifacts across builds, with citations.
+
+Select runs by artifact availability, never by run conclusion. Branch runs are
+examined newest first, including cancelled and in-progress runs. Skipped runs
+are reported on stderr. ARTIFACT accepts fnmatch globs and {sha} (full head SHA).
+PATH is an exact, case-sensitive path inside the ZIP, not a local destination.
+
+Requires authenticated gh. Without -R, uses GH_REPO or gh's current repo context.
+Exit 0 means every requested run was printed. Exit 1 means an error or fewer
+than --last matching runs (default 5). Multiple matching artifacts are ambiguous.
+
+Example, the RPC union tag enum in the last five master Product builds, each
+cited by its artifact upload log line:
+    gh-artifact-file -R LEGO-CPL/p11-firmware --workflow product.yml --branch master \\
+        --job 'apps_emm_audiobrick_part_one$' --grep RPC_UNION_TAG_ \\
+        'apps_emm_audiobrick_part_one_{sha}' \\
+        audiobrick/production_di05_es21_for_analysis/emm/src/3rdparty/cambridgeconsultants/rpc/generated/audiobrick/rpc_types.h
+"""
+
+from __future__ import annotations
+
+import argparse
+import fnmatch
+import hashlib
+import json
+import re
+import subprocess
+import sys
+import tempfile
+from collections.abc import Iterator
+from itertools import count
+from typing import BinaryIO, Never, NotRequired, TypedDict
+from urllib.parse import quote, urlencode
+from zipfile import BadZipFile, ZipFile
+
+
+class ArtifactError(Exception):
+    """The requested artifact file cannot be read reliably."""
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message: str) -> Never:
+        self.exit(1, f"gh-artifact-file: {message}\n")
+
+
+class Run(TypedDict):
+    id: int
+    head_sha: str
+    status: str
+    conclusion: str | None
+    created_at: str
+
+
+class Artifact(TypedDict):
+    id: int
+    name: str
+    expired: bool
+
+
+class Page(TypedDict):
+    workflow_runs: list[Run]
+    artifacts: list[Artifact]
+    jobs: list[Job]
+
+
+class Job(TypedDict):
+    id: int
+    name: str
+
+
+class Line(TypedDict):
+    line: int
+    text: str
+
+
+class Result(TypedDict):
+    sha: str
+    run_id: int
+    run_status: str
+    created_at: str
+    artifact_id: int
+    artifact_url: str
+    citation_url: str
+    lines: NotRequired[list[Line]]
+    sha256: NotRequired[str]
+
+
+def gh(endpoint: str) -> str:
+    result = subprocess.run(["gh", "api", endpoint], capture_output=True, text=True,
+                            timeout=120, check=False)
+    if result.returncode:
+        raise ArtifactError(result.stderr.strip() or f"gh api exited {result.returncode}")
+    return result.stdout
+
+
+def download(endpoint: str, output: BinaryIO) -> None:
+    """Stream the ZIP directly to disk, not a captured stdout buffer."""
+    result = subprocess.run(["gh", "api", endpoint], stdout=output, stderr=subprocess.PIPE,
+                            timeout=300, check=False)
+    if result.returncode:
+        raise ArtifactError(result.stderr.decode("utf-8", "replace").strip()
+                            or f"gh api exited {result.returncode}")
+
+
+def runs(repo: str, args: argparse.Namespace) -> Iterator[Run]:
+    if args.run:
+        for run_id in args.run:
+            run: Run = json.loads(gh(f"repos/{repo}/actions/runs/{run_id}"))
+            yield run
+        return
+    path = f"repos/{repo}/actions"
+    if args.workflow:
+        path += f"/workflows/{quote(args.workflow, safe='')}"
+    for page in count(1):
+        query = urlencode({"branch": args.branch, "per_page": 100, "page": page})
+        data: Page = json.loads(gh(f"{path}/runs?{query}"))
+        yield from data["workflow_runs"]
+        if len(data["workflow_runs"]) < 100:
+            return
+
+
+def matching_artifact(repo: str, run: Run, pattern: str) -> Artifact | None:
+    matches: list[Artifact] = []
+    page = 1
+    while True:
+        data: Page = json.loads(gh(f"repos/{repo}/actions/runs/{run['id']}/artifacts?per_page=100&page={page}"))
+        matches.extend(a for a in data["artifacts"]
+                       if fnmatch.fnmatchcase(a["name"], pattern.replace("{sha}", run["head_sha"])))
+        if len(data["artifacts"]) < 100:
+            break
+        page += 1
+    available = [a for a in matches if not a["expired"]]
+    if len(available) > 1:
+        raise ArtifactError(f"run {run['id']}: multiple matching artifacts; use a more specific name")
+    if available:
+        return available[0]
+    reason = "expired" if matches else "no matching artifact"
+    print(f"gh-artifact-file: skipping run {run['id']}: {reason}", file=sys.stderr)
+    return None
+
+
+def file_bytes(repo: str, artifact_id: int, path: str) -> bytes:
+    with tempfile.TemporaryFile() as output:
+        download(f"repos/{repo}/actions/artifacts/{artifact_id}/zip", output)
+        output.seek(0)
+        with ZipFile(output) as archive:
+            if path not in archive.namelist():
+                basename = path.rsplit("/", 1)[-1]
+                suggestions = [name for name in archive.namelist() if name.rsplit("/", 1)[-1] == basename][:5]
+                raise ArtifactError(f"{path} not in artifact {artifact_id}; suggestions: "
+                                    + (", ".join(suggestions) or "none"))
+            return archive.read(path)
+
+
+def step_anchor(repo: str, job_id: int, artifact_id: int) -> str:
+    result = subprocess.run(["gh-step-anchor", "-R", repo, str(job_id),
+                             f"Artifact ID is {artifact_id}", "--json"],
+                            capture_output=True, text=True, timeout=180, check=False)
+    if result.returncode:
+        raise ArtifactError(result.stderr.strip() or "upload anchor unavailable")
+    anchors: list[dict[str, str]] = json.loads(result.stdout)
+    if not anchors:
+        raise ArtifactError("upload anchor unavailable")
+    return anchors[0]["url"]
+
+
+def citation(repo: str, result: Result, pattern: re.Pattern[str]) -> str:
+    jobs: list[Job] = []
+    page = 1
+    while True:
+        data: Page = json.loads(gh(f"repos/{repo}/actions/runs/{result['run_id']}/jobs?per_page=100&page={page}"))
+        jobs.extend(job for job in data["jobs"] if pattern.search(job["name"]))
+        if len(data["jobs"]) < 100:
+            break
+        page += 1
+    if len(jobs) != 1:
+        raise ArtifactError(f"expected one matching job, found {len(jobs)}")
+    return step_anchor(repo, jobs[0]["id"], result["artifact_id"])
+
+
+def main() -> None:
+    parser = Parser(prog="gh-artifact-file", description=__doc__.split("\n\n", 1)[0],
+                    epilog=__doc__.split("\n\n", 1)[1], formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("-R", "--repo", help="OWNER/REPO (default: GH_REPO or the current gh repo)")
+    parser.add_argument("--workflow", help="only runs of this workflow file name or ID, with --branch")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--branch", help="the branch's newest runs that uploaded ARTIFACT, whatever their conclusion")
+    source.add_argument("--run", action="append", type=int, help="this run ID (repeat for more)")
+    parser.add_argument("--last", type=int, help="how many runs to print with --branch (default 5)")
+    parser.add_argument("--job", help="regex for the job that uploaded ARTIFACT, to cite its upload log line "
+                                      "instead of the artifact URL")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--lines", help="print only lines A-B (1-based, inclusive), with line numbers")
+    mode.add_argument("--grep", help="print only lines matching this regex, with line numbers")
+    mode.add_argument("--sha256", action="store_true", help="print the file's sha256 instead of its lines")
+    parser.add_argument("--json", action="store_true", help="print a JSON list with one object per run")
+    parser.add_argument("artifact", metavar="ARTIFACT",
+                        help="artifact name. {sha} expands to the run's head SHA, and fnmatch globs work")
+    parser.add_argument("path", metavar="PATH", help="the file's path inside the artifact ZIP")
+    args = parser.parse_args()
+    try:
+        bounds = (1, sys.maxsize)
+        if args.lines:
+            match = re.fullmatch(r"([1-9]\d*)-([1-9]\d*)", args.lines)
+            if not match or int(match[1]) > int(match[2]):
+                raise ArtifactError("--lines must be a 1-based inclusive range A-B")
+            bounds = (int(match[1]), int(match[2]))
+        pattern = re.compile(args.grep) if args.grep is not None else None
+        job_pattern = re.compile(args.job) if args.job is not None else None
+        if args.last is not None and (args.last < 1 or args.run):
+            raise ArtifactError("--last must be positive and requires --branch")
+        if args.workflow and args.run:
+            raise ArtifactError("--workflow requires --branch")
+        if args.repo and not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo):
+            raise ArtifactError("--repo must be OWNER/REPO")
+        repo = args.repo or json.loads(gh("repos/{owner}/{repo}"))["full_name"]
+        expected = len(args.run) if args.run else (args.last or 5)
+        results: list[Result] = []
+        for run in runs(repo, args):
+            artifact = matching_artifact(repo, run, args.artifact)
+            if artifact is None:
+                continue
+            url = f"https://github.com/{repo}/actions/runs/{run['id']}/artifacts/{artifact['id']}"
+            result = Result(sha=run["head_sha"], run_id=run["id"], run_status=run["conclusion"] or run["status"],
+                            created_at=run["created_at"], artifact_id=artifact["id"], artifact_url=url,
+                            citation_url=url)
+            if job_pattern is not None:
+                try:
+                    result["citation_url"] = citation(repo, result, job_pattern)
+                except (ArtifactError, OSError, subprocess.TimeoutExpired, ValueError, KeyError) as error:
+                    print(f"gh-artifact-file: run {run['id']}: anchor unavailable: "
+                          + " ".join(str(error).splitlines()) + "; using artifact URL", file=sys.stderr)
+            content = file_bytes(repo, artifact["id"], args.path)
+            if args.sha256:
+                result["sha256"] = hashlib.sha256(content).hexdigest()
+            else:
+                result["lines"] = [Line(line=n, text=text) for n, text in enumerate(content.decode("utf-8").splitlines(), 1)
+                                   if bounds[0] <= n <= bounds[1] and (pattern is None or pattern.search(text))]
+            results.append(result)
+            if not args.json:
+                print(f"{result['sha'][:10]} run {result['run_id']} ({result['run_status']}) "
+                      f"{result['created_at']} artifact {result['artifact_id']}\n{result['citation_url']}")
+                if args.sha256:
+                    print(result["sha256"])
+                else:
+                    for line in result["lines"]:
+                        print(f"{line['line']}: {line['text']}" if args.lines or pattern is not None else line["text"])
+            if len(results) == expected:
+                break
+        if args.json:
+            print(json.dumps(results, indent=2))
+        if len(results) < expected:
+            raise ArtifactError(f"found {len(results)} of {expected} requested runs with an unexpired matching artifact")
+    except (ArtifactError, OSError, subprocess.TimeoutExpired, ValueError, KeyError, BadZipFile, re.error) as error:
+        print("gh-artifact-file: " + " ".join(str(error).splitlines()), file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
