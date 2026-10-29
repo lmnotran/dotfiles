@@ -205,7 +205,7 @@ def test_word_budget_blocks_a_long_whole_body_edit(pr: ModuleType, monkeypatch: 
 
 
 @pytest.mark.parametrize(("extra", "text"), [
-    (["--section", "## Test plan"], "- [x] " + "word " * 200),
+    (["--section", "## Test plan"], "- [x] word word word word\n" * 50),
     (["--long", "the migration needs it"], "## Summary\n\n" + "word " * 61),
 ])
 def test_word_budget_skipped_for_other_sections_or_with_long(pr: ModuleType, monkeypatch: pytest.MonkeyPatch,

@@ -13,6 +13,10 @@ marks or code blocks is skipped:
     atl-origin      "atlOrigin=" in a Jira link you wrote. Drop the tracking
                     query. The Jira integration's "[KEY]: https://…?atlOrigin=…"
                     footer lines are left alone.
+    bullet-length   (Markdown only) a list item, checkbox included, over 35
+                    words. Code spans count here, and the rest is counted like
+                    the word budget below. Give each point its own item, and
+                    put several values in a table.
 
 Word budget, for Markdown PR bodies with --diff-lines N (the PR's added plus
 deleted lines). gh-pr-create and gh-pr-body pass it:
@@ -70,7 +74,9 @@ _LINK_TEXT_TAIL_RE = re.compile(r"[^\[\]]*\]\(")
 SUMMARY_WORD_BUDGET: Final = 60
 SMALL_DIFF_LINES: Final = 50
 SMALL_DIFF_WORD_BUDGET: Final = 150
+BULLET_WORD_LIMIT: Final = 35
 _HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.*?)\s*$")
+_LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
 _CHECKBOX_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+\[[ xX]\]\s")
 _HTML_RE = re.compile(r"<!--.*?-->|<[^>\n]+>", re.DOTALL)
 _WORD_RE = re.compile(r"[A-Za-z][\w'’-]*")
@@ -118,7 +124,17 @@ def _line_findings(where, line):
             findings.append(Finding(where, "backticked-sha", span.group(0)))
     linked = _CODE_SPAN_RE.sub(" ", line)
     prose = _BARE_URL_RE.sub(" ", _LINK_DEST_RE.sub("]", linked))
-    return findings + _prose_findings(where, prose, linked)
+    findings += _prose_findings(where, prose, linked)
+    if _LIST_ITEM_RE.match(line):
+        words = _line_words(_HTML_RE.sub(" ", line))
+        if words > BULLET_WORD_LIMIT:
+            findings.append(Finding(where, "bullet-length", f"{words} words, limit {BULLET_WORD_LIMIT}"))
+    return findings
+
+
+def _line_words(line: str) -> int:
+    """Words in one Markdown line, skipping its checkbox marker, link targets, and bare URLs."""
+    return len(_WORD_RE.findall(_BARE_URL_RE.sub(" ", _LINK_DEST_RE.sub("]", _CHECKBOX_RE.sub("", line)))))
 
 
 def _blank_pre_blocks(text: str) -> str:
@@ -167,7 +183,7 @@ def word_counts(text: str) -> tuple[int, int | None]:
             continue
         if _REF_DEF_RE.match(line):
             continue
-        words = len(_WORD_RE.findall(_BARE_URL_RE.sub(" ", _LINK_DEST_RE.sub("]", _CHECKBOX_RE.sub("", line)))))
+        words = _line_words(line)
         total += words
         if summary_depth is not None:
             summary += words
