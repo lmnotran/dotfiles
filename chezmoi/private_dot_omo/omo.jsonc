@@ -1,0 +1,239 @@
+// OMO configuration
+{
+  "$schema": "https://raw.githubusercontent.com/code-yeongyu/oh-my-openagent/dev/assets/omo.schema.json",
+  "[opencode]": {
+    "agents": {
+      "sisyphus": {
+        "models": [
+          {
+            "model": "github-copilot/claude-opus-4.8",
+            "reasoning": "max"
+          },
+          {
+            "model": "github-copilot/gpt-5.5",
+            "reasoning": "medium"
+          }
+        ]
+      },
+      "hephaestus": {
+        "model": "github-copilot/gpt-5.5",
+        "reasoning": "medium"
+      },
+      "oracle": {
+        "models": [
+          {
+            "model": "github-copilot/gpt-5.5",
+            "reasoning": "high"
+          },
+          {
+            "model": "github-copilot/gemini-3.1-pro-preview",
+            "reasoning": "high"
+          },
+          {
+            "model": "github-copilot/claude-opus-4.8",
+            "reasoning": "max"
+          }
+        ]
+      },
+      "librarian": {
+        "model": "github-copilot/claude-haiku-4.5"
+      },
+      "explore": {
+        "models": [
+          "github-copilot/gpt-5-mini",
+          {
+            "model": "github-copilot/claude-haiku-4.5"
+          }
+        ]
+      },
+      "multimodal-looker": {
+        "model": "github-copilot/gpt-5-nano"
+      },
+      "prometheus": {
+        "models": [
+          {
+            "model": "github-copilot/claude-opus-4.8",
+            "reasoning": "max"
+          },
+          {
+            "model": "github-copilot/gpt-5.5",
+            "reasoning": "high"
+          },
+          {
+            "model": "github-copilot/gemini-3.1-pro-preview"
+          }
+        ]
+      },
+      "metis": {
+        "models": [
+          "github-copilot/claude-sonnet-4.6",
+          {
+            "model": "github-copilot/claude-opus-4.8",
+            "reasoning": "max"
+          },
+          {
+            "model": "github-copilot/gpt-5.5",
+            "reasoning": "high"
+          }
+        ]
+      },
+      "momus": {
+        "models": [
+          {
+            "model": "github-copilot/gpt-5.5",
+            "reasoning": "high"
+          },
+          {
+            "model": "github-copilot/claude-opus-4.8",
+            "reasoning": "max"
+          },
+          {
+            "model": "github-copilot/gemini-3.1-pro-preview",
+            "reasoning": "high"
+          }
+        ]
+      },
+      "atlas": {
+        "models": [
+          "github-copilot/claude-sonnet-4.6",
+          {
+            "model": "github-copilot/gpt-5.5",
+            "reasoning": "medium"
+          }
+        ]
+      },
+      "sisyphus-junior": {
+        "models": [
+          "github-copilot/claude-sonnet-4.6",
+          {
+            "model": "github-copilot/gpt-5.5",
+            "reasoning": "medium"
+          }
+        ]
+      }
+    },
+    "categories": {
+      "visual-engineering": {
+        "models": [
+          {
+            "model": "github-copilot/gemini-3.1-pro-preview",
+            "reasoning": "high"
+          },
+          {
+            "model": "github-copilot/claude-opus-4.8",
+            "reasoning": "max"
+          }
+        ]
+      },
+      "ultrabrain": {
+        "models": [
+          {
+            "model": "github-copilot/gemini-3.1-pro-preview",
+            "reasoning": "high"
+          },
+          {
+            "model": "github-copilot/claude-opus-4.8",
+            "reasoning": "max"
+          }
+        ]
+      },
+      "deep-low": {
+        "models": [
+          {
+            "model": "github-copilot/gpt-5.5",
+            "reasoning": "medium"
+          },
+          {
+            "model": "github-copilot/claude-opus-4.8",
+            "reasoning": "max"
+          },
+          {
+            "model": "github-copilot/gemini-3.1-pro-preview",
+            "reasoning": "high"
+          }
+        ]
+      },
+      "artistry": {
+        "models": [
+          {
+            "model": "github-copilot/gemini-3.1-pro-preview",
+            "reasoning": "high"
+          },
+          {
+            "model": "github-copilot/claude-opus-4.8",
+            "reasoning": "max"
+          },
+          {
+            "model": "github-copilot/gpt-5.5"
+          }
+        ]
+      },
+      "quick": {
+        "models": [
+          "github-copilot/gpt-5.4-mini",
+          {
+            "model": "github-copilot/claude-haiku-4.5"
+          },
+          {
+            "model": "github-copilot/gemini-3-flash-preview"
+          }
+        ]
+      },
+      "unspecified-low": {
+        "models": [
+          "github-copilot/claude-sonnet-4.6",
+          {
+            "model": "github-copilot/gemini-3-flash-preview"
+          }
+        ]
+      },
+      "unspecified-high": {
+        "models": [
+          "github-copilot/claude-sonnet-4.6",
+          {
+            "model": "github-copilot/gemini-3-flash-preview"
+          }
+        ]
+      },
+      "writing": {
+        "models": [
+          "github-copilot/gemini-3-flash-preview",
+          {
+            "model": "github-copilot/claude-sonnet-4.6"
+          }
+        ]
+      }
+    },
+    "team_mode": {
+      "enabled": true,
+      "tmux_visualization": true,
+      "max_parallel_members": 8
+    },
+    // Claude desktop skills that need browser, desktop, or connector tools OpenCode
+    // doesn't have. ~/.config/opencode/opencode.jsonc denies them in OpenCode's own
+    // skill list. omo lists each twice: by name, and by its path under
+    // ~/.claude/skills/synced.
+    "disabled_skills": [
+      "built-in-browser",
+      "chrome-browser",
+      "computer-use",
+      "docs",
+      "google-workspace",
+      "import-memory",
+      "morning",
+      "synced/51e217ab-42f2-479d-becf-70d493d0a78b_9e6e50b1-7bbd-4ecb-a31e-20566f3ad44f/built-in-browser",
+      "synced/51e217ab-42f2-479d-becf-70d493d0a78b_9e6e50b1-7bbd-4ecb-a31e-20566f3ad44f/chrome-browser",
+      "synced/51e217ab-42f2-479d-becf-70d493d0a78b_9e6e50b1-7bbd-4ecb-a31e-20566f3ad44f/computer-use",
+      "synced/51e217ab-42f2-479d-becf-70d493d0a78b_9e6e50b1-7bbd-4ecb-a31e-20566f3ad44f/docs",
+      "synced/51e217ab-42f2-479d-becf-70d493d0a78b_9e6e50b1-7bbd-4ecb-a31e-20566f3ad44f/google-workspace",
+      "synced/51e217ab-42f2-479d-becf-70d493d0a78b_9e6e50b1-7bbd-4ecb-a31e-20566f3ad44f/import-memory",
+      "synced/51e217ab-42f2-479d-becf-70d493d0a78b_9e6e50b1-7bbd-4ecb-a31e-20566f3ad44f/morning"
+    ]
+  },
+  "_migrations": [
+    "2026-07-opencode-config-unification",
+    "2026-08-reasoning-unification",
+    "2026-09-category-deep-split",
+    "2026-09-opencode-routing-notice"
+  ]
+}

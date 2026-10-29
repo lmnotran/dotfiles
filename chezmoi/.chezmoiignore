@@ -1,0 +1,6 @@
+{{- /* OpenCode and OMO configs from the work Mac. allston-st keeps its own, with local model providers. */ -}}
+{{- if not (hasPrefix "usmastra" .chezmoi.username) }}
+.config/opencode/agent
+.config/opencode/opencode.jsonc
+.omo
+{{- end }}
