@@ -2,24 +2,12 @@
 {{- if stat $colimaSshConfig }}
 Include {{ $colimaSshConfig }}
 {{ end }}
-Host github-personal
-    IdentityFile ~/.ssh/id_ed25519_personal
 
-Host github-work github.com github
-    IdentityFile ~/.ssh/id_ed25519_work
+Include ~/.ssh/config.d/personal.conf
+Include ~/.ssh/config.d/work.conf
 
 Host github*
     User git
     IdentitiesOnly yes
     HostName github.com
 
-# Boston LEGO CPL Hardware Lab
-Host allston-st boylston-st
-    User mason
-    IdentityFile ~/.ssh/id_ed25519_work
-
-# Work mac
-Host M-03567
-    User usmastra
-    IdentityFile ~/.ssh/id_ed25519_work
-    HostName M-03567
