@@ -167,6 +167,111 @@ install_tmux_framework() {
     run git clone --depth=1 https://github.com/gpakosz/.tmux.git "$tmux_home"
 }
 
+setup_work_user_access() {
+    local personal_user="mason"
+    local work_user="usmastra"
+    local shared_group="sharedwork"
+    local work_home="/Users/$work_user"
+    local sudoers_file="/etc/sudoers.d/work-user"
+
+    # Only relevant on macOS when both users exist
+    if [[ "$OSTYPE" != "darwin"* ]]; then
+        return
+    fi
+    if ! id "$work_user" &>/dev/null; then
+        log "Work user '$work_user' not found, skipping work-user access setup"
+        return
+    fi
+    if [[ "$(whoami)" != "$personal_user" ]]; then
+        return
+    fi
+
+    # --- Sudoers rule ---
+    if [[ -f "$sudoers_file" ]]; then
+        log "Work-user sudoers rule already configured"
+    else
+        log "Configuring sudoers for '$personal_user' to switch to '$work_user'..."
+        if $DRY_RUN; then
+            log "(dry-run) Would create $sudoers_file"
+        else
+            printf '%s ALL=(%s) NOPASSWD: ALL\n' "$personal_user" "$work_user" \
+                | sudo tee "$sudoers_file" >/dev/null
+            sudo chmod 0440 "$sudoers_file"
+            if sudo visudo -cf "$sudoers_file"; then
+                log "${GREEN}✓${RESET} Created $sudoers_file"
+            else
+                sudo rm -f "$sudoers_file"
+                warn "Invalid sudoers syntax, removed $sudoers_file"
+            fi
+        fi
+    fi
+
+    # --- Shared group for cross-user file access ---
+    if dseditgroup -o checkmember -m "$personal_user" "$shared_group" &>/dev/null; then
+        log "Shared group '$shared_group' already configured"
+    else
+        log "Setting up shared group '$shared_group'..."
+        if $DRY_RUN; then
+            log "(dry-run) Would create group '$shared_group' and add '$personal_user'"
+        else
+            # Create group if it doesn't exist
+            if ! dseditgroup -o read "$shared_group" &>/dev/null; then
+                sudo dseditgroup -o create "$shared_group"
+                log "Created group '$shared_group'"
+            fi
+            # Add both users to the group
+            sudo dseditgroup -o edit -a "$personal_user" -t user "$shared_group"
+            sudo dseditgroup -o edit -a "$work_user" -t user "$shared_group"
+            log "${GREEN}✓${RESET} Added '$personal_user' and '$work_user' to '$shared_group'"
+        fi
+    fi
+
+    # --- Set group ownership on work home directory ---
+    if [[ -d "$work_home" ]]; then
+        # Directories to skip (macOS system/app-managed folders)
+        local -a skip_dirs=(
+            Library
+            Desktop
+            Documents
+            Downloads
+            Pictures
+            Music
+            Movies
+            Public
+            Applications
+            .Trash
+        )
+
+        local current_group
+        current_group="$(stat -f '%Sg' "$work_home")"
+        if [[ "$current_group" == "$shared_group" ]]; then
+            log "Group ownership on $work_home already set"
+        else
+            log "Setting group ownership on $work_home..."
+            if $DRY_RUN; then
+                log "(dry-run) Would chgrp/chmod $work_home (skipping: ${skip_dirs[*]})"
+            else
+                # Set group on the home directory itself
+                sudo chgrp "$shared_group" "$work_home"
+                sudo chmod g+rwX "$work_home"
+
+                # Recursively set group on everything except skipped dirs
+                local find_args=()
+                for d in "${skip_dirs[@]}"; do
+                    find_args+=(-path "$work_home/$d" -prune -o)
+                done
+
+                sudo find "$work_home" "${find_args[@]}" -print0 \
+                    | sudo xargs -0 chgrp "$shared_group"
+                sudo find "$work_home" "${find_args[@]}" -print0 \
+                    | sudo xargs -0 chmod g+rwX
+
+                log "${GREEN}✓${RESET} Set '$shared_group' group ownership on $work_home (skipped: ${skip_dirs[*]})"
+            fi
+        fi
+    fi
+}
+
 set_default_shell() {
     if [[ "$SHELL" == *"zsh"* ]]; then
         log "zsh is already the default shell"
@@ -216,6 +321,7 @@ main() {
     install_antidote
     install_tmux_framework
     set_default_shell
+    setup_work_user_access
 
     log "${GREEN}✓${RESET} Dependencies installed!"
 }
