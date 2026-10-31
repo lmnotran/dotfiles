@@ -16,20 +16,28 @@ Or if you already have the repo cloned:
 ./script/bootstrap
 ```
 
-That's it! Restart your terminal and you're good to go.
+Restart your terminal after setup.
 
 ## What Gets Installed
 
-The `run_once_before_01-install-deps.sh` script automatically installs:
+The [chezmoi setup hook](chezmoi/run_once_before_01-install-deps.sh.tmpl) runs
+[`script/install-deps`](script/install-deps) to install packages and tools.
 
 ### Packages
-- **Linux (apt):** `zsh`, `git`, `neovim`, `fzf`, `ripgrep`, `fd-find`, `tmux`, `htop`, `curl`, `wget`, `make`
-- **Linux (brew):** `lazygit`, `pyenv`, `bitwarden-cli`
-- **macOS (brew):** All of the above
 
-### Tools (cloned on-demand)
-- [antidote](https://github.com/mattmc3/antidote) — zsh plugin manager → `~/.local/share/antidote`
-- [gpakosz/.tmux](https://github.com/gpakosz/.tmux) — tmux config framework → `~/.tmux`
+On Linux, packages are installed with apt and Homebrew extras. On macOS,
+Homebrew installs the base packages and extras, and pip installs the Cocoa
+bindings used by macOS tooling. See the package arrays in
+[`script/install-deps`](script/install-deps) for the current lists.
+
+### Tools
+
+Setup clones these tools if they aren't installed:
+
+| Tool | Purpose | Location |
+|------|---------|----------|
+| [antidote](https://github.com/mattmc3/antidote) | Zsh plugin manager | `~/.local/share/antidote` |
+| [gpakosz/.tmux](https://github.com/gpakosz/.tmux) | Tmux config framework | `~/.tmux` |
 
 ### Managed Dotfiles
 | File | Description |
@@ -43,6 +51,9 @@ The `run_once_before_01-install-deps.sh` script automatically installs:
 | `~/.tmux.conf.local` | Tmux customizations |
 | `~/.profile` | Pyenv for bash shells |
 | `~/.spaceshiprc.zsh` | Spaceship prompt config |
+
+Karabiner is managed with Stow under [`stow/karabiner/`](stow/karabiner/),
+using the targets in [`Makefile`](Makefile).
 
 ## Common Commands
 
@@ -68,7 +79,8 @@ Files are stored in `chezmoi/` with special naming:
 
 ## Machine-Specific Config
 
-Machine-specific settings are handled via Go templates in `dot_zshrc.tmpl`:
+Machine-specific settings are handled via Go templates, including
+[`chezmoi/dot_zshrc.tmpl`](chezmoi/dot_zshrc.tmpl):
 
 ```bash
 {{- if eq .chezmoi.hostname "bigboi" }}
@@ -82,25 +94,27 @@ umask 002
 
 Available variables: `.chezmoi.hostname`, `.chezmoi.os`, `.chezmoi.username`
 
+Work configuration is selected when the username starts with `usmastra` or
+`username@hostname` appears in
+[`chezmoi/.chezmoidata.toml`](chezmoi/.chezmoidata.toml).
+
 ## Secrets Management
 
 Secrets are managed separately from dotfiles using [Bitwarden Secrets Manager](https://bitwarden.com/products/secrets-manager/).
 
-### Runtime Secrets (for Docker)
+### Runtime Secrets
 
-Docker compose files use `${VAR:?must be set}` pattern. Load secrets before running containers:
+Load a profile into the current shell before running tools that need it:
 
 ```bash
 # Load secrets for a profile
 secrets docker        # cloudflare, paperless, pihole, mariadb
 secrets lego          # GHCR_TOKEN, GITHUB_TOKEN
+secrets jira          # Jira credentials
 secrets all           # everything
-
-# Then run your containers
-docker compose up -d
 ```
 
-Available profiles: `cloudflare`, `paperless`, `pihole`, `mariadb`, `aviationstack`, `lego`, `docker`, `all`
+See [`script/load-secrets`](script/load-secrets) for all available profiles.
 
 ### SSH/GPG Keys (one-time setup)
 
@@ -108,17 +122,21 @@ Available profiles: `cloudflare`, `paperless`, `pihole`, `mariadb`, `aviationsta
 ./script/setup-keys
 ```
 
-Generates per-machine SSH and GPG keys locally and uploads the public keys to the matching GitHub account. Private keys never leave the machine.
+This generates SSH and GPG keys for the machine and uploads the public keys
+to the matching GitHub account. Private keys stay on the machine.
 
 ### How It Works
 
-1. **BWS_ACCESS_TOKEN** — Stored in Bitwarden vault, fetched on first `secrets` call
-2. **Secret UUIDs** — Stored in `script/load-secrets` (safe to commit)
-3. **Actual secrets** — Fetched at runtime via `bws`, never stored locally
+1. `secrets` fetches `BWS_ACCESS_TOKEN` from the Bitwarden vault when needed.
+2. `script/load-secrets` uses the secret UUIDs to fetch values with `bws`. UUIDs are references, so they're safe to commit.
+3. `secrets` exports the values into the current shell. Keep those values out of Git.
 
 ## OpenChamber Service
 
-On allston-st, OpenChamber (the web UI for OpenCode) runs as the systemd user service `openchamber.service`, controlled with `chamberctl`. To set it up on a Linux machine:
+OpenChamber is the web UI for OpenCode. On allston-st, it runs as the systemd
+user service `openchamber.service`. Control it with `chamberctl`.
+
+To install it on a Linux machine:
 
 ```bash
 ./script/install-openchamber
@@ -130,23 +148,27 @@ See [docs/openchamber.md](docs/openchamber.md) for what it installs, how to upda
 
 ### Tooling tests
 
-Run the managed CLI helper tests without GitHub/Jira credentials:
+Run the CLI helper tests without GitHub or Jira credentials:
 
 ```bash
 uv run --with-requirements requirements-tooling-test.txt python -m pytest tests/tooling --disable-socket --strict-markers
 ```
 
-The suite covers all helpers under `chezmoi/dot_local/bin`: Actions log anchors
-and timings, CI sampling, PR/review body editing, Jira rendering/payloads, context
-nudges, and sandbox commands. External command boundaries are mocked or isolated
-in disposable fixtures; tests do not push commits, edit live issues, install
-dotfiles, or run interactive agents. See `tests/tooling/README.md` for coverage.
+The suite tests helpers in [`chezmoi/dot_local/bin/`](chezmoi/dot_local/bin/).
+Tests use fake command responses or temporary directories. They don't push
+commits, edit live issues, install dotfiles, or launch agents.
 
-The **Tooling tests** workflow runs on Python 3.11 and 3.13 when helpers, tests,
-test dependencies, or the workflow change. It also supports manual dispatch and
-uploads JUnit results. The existing dotfiles deployment workflow remains separate.
-This suite does not exercise machine bootstrap, secret loading, calendar
-integrations, or the Docker services.
+See [`tests/tooling/README.md`](tests/tooling/README.md) for coverage and gaps.
+Type-check the Python helpers with
+[`script/typecheck-helpers`](script/typecheck-helpers).
+
+| Workflow | Checks |
+|----------|--------|
+| **Tooling tests** | Helper tests on Python 3.11 and 3.13, plus mypy type checks. Uploads JUnit results. |
+| **Dotfiles CI** | Shell scripts, chezmoi apply, Zsh, Neovim, tmux, and the dependency installer's dry run. |
+
+Both workflows support manual runs. Their
+[workflow files](.github/workflows/) define which changes trigger them.
 
 ### Allure reports
 
@@ -165,10 +187,6 @@ uv run python -m http.server 8080 --bind 127.0.0.1 --directory allure-report
 
 Use a fresh report output directory for each generation and browse
 `http://127.0.0.1:8080/`. Reports currently contain one run, not persistent history.
-Bao publishing is pending deployment access and the public/private access policy;
-the planned route is `https://bao.segfault.rip/allure/dotfiles/<python-version>/`.
-The existing SSH pattern lives in `bill-split/docs/deploying.md`; its GitHub secrets
-are not shared with this repo. No server configuration is changed by this workflow.
 
 | Script | Description |
 |--------|-------------|
@@ -188,4 +206,4 @@ To automatically apply dotfiles when opening any VS Code devcontainer, add to yo
 ...
 ```
 
-This uses VS Code's built-in dotfiles support — it clones the repo once, then chezmoi uses that clone directly.
+VS Code clones the repo once. Chezmoi applies dotfiles from that clone.

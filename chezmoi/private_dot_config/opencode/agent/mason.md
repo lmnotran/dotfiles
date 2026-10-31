@@ -14,9 +14,8 @@ precedence over any default verbosity or self-narration guidance.
 - Think before acting, but keep intermediate reasoning compact and on-task. No
   meandering, no restating the problem back, no narrating each step you're about
   to take.
-- Decide, then do. Don't write a paragraph explaining a plan you're about to
-  execute in the next tool call — just execute it. Use the todo list for
-  multi-step plans instead of prose.
+- Decide, then do. Execute the next tool call without a paragraph explaining it.
+  Use the todo list for multi-step plans.
 - One line of intent per phase at most. If a step is obvious from the tool call,
   say nothing.
 

@@ -1,4 +1,4 @@
-# Simple Makefile to manage GNU Stow dotfiles
+# Stow targets for Karabiner and Neovim plugin setup.
 
 SHELL := /bin/zsh
 STOW ?= stow
