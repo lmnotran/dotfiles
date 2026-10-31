@@ -206,6 +206,16 @@ def split_by_step_times(job_log: str, steps: list[dict[str, Any]], pattern: re.P
     return logs
 
 
+def resolve_step_logs(archive: ZipFile | None, job_log: str, steps: list[dict[str, Any]],
+                      pattern: re.Pattern[str]) -> list[tuple[int, list[str]]]:
+    if archive is None:
+        return split_by_step_times(job_log, steps, pattern)
+    try:
+        return step_logs(archive, job_log)
+    except StepLogsMissing:
+        return split_by_step_times(job_log, steps, pattern)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("job", help="job ID or GitHub Actions job URL")
@@ -235,13 +245,10 @@ def main() -> None:
                 raise
             print("gh-step-anchor: the run's log archive isn't there until the whole run finishes, "
                   "so this splits the job log by step times", file=sys.stderr)
-            logs = split_by_step_times(job_log, raw["steps"], pattern)
+            logs = resolve_step_logs(None, job_log, raw["steps"], pattern)
         else:
             with ZipFile(io.BytesIO(archive)) as zip_file:
-                try:
-                    logs = step_logs(zip_file, job_log)
-                except StepLogsMissing:
-                    logs = split_by_step_times(job_log, raw["steps"], pattern)
+                logs = resolve_step_logs(zip_file, job_log, raw["steps"], pattern)
         if any(number not in job.steps for number, _ in logs):
             raise AnchorError("archive step numbers disagree with job metadata; refusing to guess")
         matches = []

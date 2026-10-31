@@ -171,6 +171,23 @@ STEP_TIMES: Final = {1: (0, 1, "Set up job"), 2: (1, 2, "Checkout"), 3: (2, 2, "
                      5: (2, 4, "Test"), 8: (4, 4, "Post Checkout"), 9: (4, 4, "Complete job")}
 
 
+def test_resolve_step_logs_fallback_keeps_conservative_step_ownership(anchor: ModuleType) -> None:
+    # Given
+    steps = [{"number": number, "name": name, "conclusion": "skipped" if name == "Lint" else "success",
+              "started_at": f"2026-01-01T00:00:{start:02d}Z", "completed_at": f"2026-01-01T00:00:{end:02d}Z"}
+             for number, (start, end, name) in STEP_TIMES.items()]
+    # When
+    logs = anchor.resolve_step_logs(None, JOB_LOG, steps, anchor.re.compile("TARGET"))
+    matches = [
+        (number, line[line.index("TARGET "):])
+        for number, step_lines in logs
+        for line in step_lines
+        if "TARGET " in line
+    ]
+    # Then
+    assert matches == [(2, "TARGET inner"), (3, "TARGET build"), (5, "TARGET test"), (5, "TARGET late test")]
+
+
 def test_fallback_anchors_when_archive_has_no_step_files(anchor: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     # Given
     serve_job_log(anchor, monkeypatch, JOB_LOG, STEP_TIMES)
