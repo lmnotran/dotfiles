@@ -101,3 +101,6 @@ function gpristine()
 
 alias gs='git status'
 alias gsu='git submodule update'
+
+# Switch to work user shell (usmastra) while staying in mason's desktop session
+alias work='sudo -u usmastra -i'
