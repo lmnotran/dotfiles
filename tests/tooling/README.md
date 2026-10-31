@@ -1,6 +1,6 @@
 # Offline tooling tests
 
-From the dotfiles root:
+Run the helper tests from the dotfiles root:
 
 ```sh
 uv run --with-requirements requirements-tooling-test.txt python -m pytest tests/tooling --disable-socket --strict-markers
@@ -9,64 +9,68 @@ uv run --with-requirements requirements-tooling-test.txt python -m pytest tests/
 Type-check the Python helpers with `script/typecheck-helpers`. CI runs it in its
 own job.
 
-Dependencies include pytest, pytest-socket, and allure-pytest for CI reports.
-CI tests Python 3.11 and 3.13.
-Installing dependencies may need network access on the first run; the
-tests themselves require no credentials or network. Sandbox tests also require
-Bash and Git on the local PATH (`/usr/bin:/bin` in the child environment).
+CI tests Python 3.11 and 3.13. Installing dependencies may need network access
+on the first run. The tests themselves need no credentials or network.
+Sandbox tests also need Bash and Git on the local PATH
+(`/usr/bin:/bin` in the child environment).
 
 ## Isolation
 
-Each test gets temporary HOME, cache, config, working and temporary directories.
-Extensionless Python helpers load through `SourceFileLoader`; module registration
-supports dataclasses. Real subprocess entry points and Python socket connections
-are blocked by default. Tests explicitly replace narrow command/API boundaries.
-Sandbox alone runs the actual Bash CLI with a sanitized environment, disabled
-system/global Git configuration, and a repository-discovery ceiling inside its
-temporary directory. These cases perform no Git mutations. No test reads secret
-files, authenticates, contacts GitHub/Jira, launches agents, or edits a user's repo.
+Each test uses temporary directories for its home, cache, config, and working
+files. Python helpers without a `.py` extension load through `SourceFileLoader`.
+Register loaded modules so dataclasses work.
+
+Tests block real subprocess calls and Python socket connections by default.
+Replace the command or API call being tested with a fake response.
+
+Sandbox tests run the real Bash CLI in a temporary directory. They disable
+system and global Git configuration and prevent Git from finding repos outside
+that directory. These tests don't change Git state.
+
+No test reads secret files, authenticates, contacts GitHub or Jira, launches
+agents, or edits a user's repo.
 
 ## Coverage
 
-| Helper | Behavioral coverage |
+| Helper and test file | What the tests check |
 |---|---|
-| `gh-pr-body` | Nested heading boundaries, last-section footer preservation, replacement footer precedence, missing sections, normalized verified writes and mismatch rejection, `-R` repo selection, PR URLs, one-line errors outside a checkout, prose-lint gate on new text with unchanged lines skipped, `--no-lint`, missing prose-lint note, word budget on whole-body and Summary edits, skipped for other sections and with `--long` |
-| `gh-pr-create` | Title format (shape, capital letter, trailing period, components from the changelog script) only in proj repos, prose-lint and word-budget stops before the PR exists, `--long`, `--ready`, `--dry-run`, body verification that ignores the Jira footer and fails on a mismatch, numstat diff counting against the fetched base, Jira remote link for the title's key with the PR URL as its globalId (created or updated), none without a key or on a body mismatch, dry-run notice, link failures that still print the URL, curl and HTTP errors |
-| `gh-pr-merge` | Squash merge when nothing is open, protection gaps (failed or pending required checks, review required, blocked, behind) that stop without `--reason` and add `--admin` with it, reason comment before the merge, unchecked boxes that need a reason but no admin, draft/closed/conflicting stops, dry run, follow-ups from ticket notes, checkbox parsing across fences and sections, required-check JSON despite nonzero exits |
-| `gh-pr-state` | Text and JSON summaries: reviews on an older commit, requested users and teams, unresolved threads, unchecked boxes outside fences, required and other checks keyed by workflow and name, the stack chain or none, base rules merged from branch protection and rulesets, unreadable protection versus an unprotected branch, a failed checks call reported as unknown, repository from a PR URL, missing PR and bad arguments, `gh pr checks` JSON despite nonzero exits |
-| `prose-lint` | Each rule's hit and its fine cases (TL;DR, entities, en dashes, code spans, fenced blocks, `<pre>` blocks with later line numbers kept, linked SHAs, schema hashes, footer reference lines), Markdown and ADF baselines, ADF code marks and code blocks skipped, payload unwrapping, CLI output and exit codes, bullet length (each list-item marker over the limit, words counted like the budget, paragraph lines, ADF lists, and baseline lines skipped), word budget (Summary limit, small-diff body limit, what word counts skip including `<pre>` blocks, `--diff-lines` and its ADF rejection) |
-| `gh-review-body` | Concatenated pagination JSON, latest authored nonempty review, explicit IDs, missing matches, PUT payload, verified writes/mismatch, stdin CLI editing |
-| `gh-run-timings` | Duration units/rounding, attempt endpoint/pagination, JSON filtering/sorting/top, timestamp arithmetic, skipped-step table rows, wall-clock display, empty results |
-| `gh-run-failures` | Error lines from pytest summaries and counts, compiler, linker, and CMake errors, Python exception lines, and `##[error]` annotations, with timestamps, ANSI codes, and workspace prefixes stripped, repeats dropped, and a line limit. Run ID or URL and `--repo` conflicts. First failed step link, cancelled jobs, `--wait` polling until done, and exit codes for failed, green, still running, and unreadable runs |
-| `gh-artifact-file` | Artifact-based selection across successful, failed, cancelled and in-progress runs, absent/expired skip reasons, last-N stopping, run/artifact pagination, SHA expansion and globs, explicit runs and repo context, whole-file/range/grep/hash output, JSON shape, upload-anchor citations and artifact-URL fallback, missing-path suggestions, insufficient matches, unknown runs and invalid options |
-| `proj-image-build` | Image discovery from `FROM ghcr.io/work-cpl/dev-image-*:${ARG}` lines, parent closure order, bake targets with parent contexts, tag args and outputs, monolith tag, unknown image and unusable tags, `--print` without Docker, builder creation before bake with attestations off, `--du`/`--rm` |
-| `proj-ci-local` | Image name resolution, default registry-cli server from the CLI config, `docker run` mounts and env for worktrees and main checkouts, linuxbrew jf, the setup script, CI's git version fallback, command quoting, `.registry-cli/` cleanup that keeps a pre-existing one, missing local image and non-firmware checkout errors |
-| `ci-sample` | Protected/detached branch refusal, cleanup dry-run, missing safe reset target, summary files with missing values/outlier median, job arithmetic, workflow resolution/ambiguity |
-| `md2adf` | ATX headings, soft-wrapped paragraphs, mixed nested lists, fenced code, inline marks, code+link preservation, tables, quotes/rules, empty text avoidance, file/stdin CLI |
-| `jira-put-description` | Invalid JSON/non-document rejection before subprocess, Markdown/ADF input, dry-run envelope, prose-lint gate with the current description as baseline, `--no-lint`, PUT endpoint, 204 success, single-request HTTP and transport failures |
-| `jira-comment` | Markdown/ADF input, POST/PUT endpoint and body, strict success codes, required/matching comment IDs, dry run, prose-lint gate with the edited comment as baseline, HTTP/transport errors |
-| `jira-create` | Markdown description, POST envelope, defaults and project/type/parent/assignee overrides, dry run, prose-lint gate and `--no-lint`, strict 201/key validation, HTTP/transport errors |
-| `jira-search` | GET endpoint and encoded JQL/fields, token pagination, maximum count, raw issues JSON, compact/empty output, API/transport errors and repeated-token rejection |
-| `jira-view` | ADF heading/list nesting/code/quote/rule/inline marks/cards/mentions/breaks, absent descriptions, raw JSON/ADF modes, non-JSON API errors |
-| `claude-context-nudge` | Cache-token aggregation, latest usage, tier persistence/suppression/escalation, malformed JSON/transcript lines/state, environment fallback, disabled mode; no prompt prose assertions |
-| `gh-step-anchor` | ANSI color codes removed before matching and from JSON text, in-memory attempt ZIP, matching job selection, setup/BOM/CRLF, nested markers, physical-line numbering that counts the `##[endgroup]` and `##[end-action]` lines GitHub's log viewer hides, as its `#step:N:L` links do, skipped-step gaps, post steps, all/JSON/step filters, URL/repo arguments, ambiguous/absent/duplicate mapping, invalid ZIP. ZIP without step files: job-log split by step times across shared seconds, composite start-action/end-action markers, steps that run a local action and open with the runner preparing its actions, skipped steps, unplaceable lines, and logs that don't fit the step times. In both modes, `^` anchoring to the text after GitHub's timestamp while timestamp patterns still match. No run archive yet (HTTP 404 while the rest of the run is going) uses the job-log split, other archive errors stop with gh's message, and `gh` raises gh's own error output |
-| `sandbox` | Real CLI help variants, unknown commands, repository-required error paths from a fully isolated non-repository |
-| `oc-session-purge` | Subagent IDs from spawn-tool results only, database children, top-level sessions skipped unless named, dry run deletes nothing, transcript/state/scan-dir removal, failed database delete exit code, ID validation |
-| `chamberctl` | Real CLI help variants and unknown commands; no systemd calls |
+| [`gh-pr-body`](test_pr_body.py) | Section boundaries and footer preservation. Verified writes, repo selection, prose checks, and word limits. |
+| [`gh-pr-create`](test_pr_create.py) | proj title rules, prose checks, dry runs, and verified bodies. Jira links and API failures. |
+| [`gh-pr-merge`](test_pr_merge.py) | Merge blockers, reason comments, admin overrides, and dry runs. Checkbox parsing and follow-up notes. |
+| [`gh-pr-state`](test_pr_state.py) | Reviews, threads, checkboxes, checks, and branch protection. Unknown states and repo selection. |
+| [`prose-lint`](test_prose_lint.py) | Rule matches and allowed text. Baselines, word limits, Markdown, Atlassian Document Format (ADF), and CLI exit codes. |
+| [`gh-review-body`](test_review_body.py) | Review selection, pagination, payloads, stdin editing, and verified writes. |
+| [`gh-run-timings`](test_run_timings.py) | Duration calculations, pagination, filters, sorting, skipped steps, and empty results. |
+| [`gh-run-failures`](test_run_failures.py) | Error extraction, cleanup, deduplication, and failed-step links. Polling, run states, and exit codes. |
+| [`gh-artifact-file`](test_artifact_file.py) | Artifact selection, pagination, file reads, and citations. Missing artifacts, invalid options, and insufficient matches. |
+| [`proj-image-build`](test_proj_image_build.py) | Image discovery, parent order, tags, and build targets. Preview and builder commands. |
+| [`proj-ci-local`](test_proj_ci_local.py) | Image selection, Docker mounts, command quoting, and registry-cli config. Cleanup and invalid checkout errors. |
+| [`ci-sample`](test_ci_sample.py) | Branch safety, cleanup previews, summaries, timing calculations, and workflow selection. |
+| [`md2adf`](test_md2adf.py) | Markdown conversion, nested lists, formatting, tables, and links. File and stdin input. |
+| [`jira-put-description`](test_jira_description.py) | Input validation, prose checks, dry runs, payloads, and API failures. |
+| [`jira-comment`](test_jira_comment.py) | Create and edit payloads, comment IDs, prose checks, dry runs, and API failures. |
+| [`jira-create`](test_jira_create.py) | Defaults, overrides, prose checks, dry runs, and response validation. |
+| [`jira-search`](test_jira_search.py) | Query encoding, pagination, result limits, output formats, and API failures. |
+| [`jira-view`](test_jira_view.py) | ADF rendering, missing descriptions, raw output, and API errors. |
+| [`claude-context-nudge`](test_context_nudge.py) | Token totals, warning levels, saved state, invalid data, and disabled mode. Prompt wording isn't tested. |
+| [`gh-step-anchor`](test_step_anchor.py) | Log matching, physical line numbers, skipped steps, and timestamps. Archive fallbacks and invalid or ambiguous logs. |
+| [`sandbox`](test_sandbox.py) | Real CLI help, unknown commands, and errors outside a repo. |
+| [`oc-session-purge`](test_session_purge.py) | Session selection, ID validation, dry runs, file removal, and database failures. |
+| [`chamberctl`](test_chamberctl.py) | Real CLI help and unknown commands. Systemd calls aren't tested. |
+
+The linked test files list the individual cases.
 
 ## Deliberate gaps
 
-- No live-service integration, authentication, remote API schema guarantees, or
-  GitHub browser confirmation of anchors.
-- No CI collection commits/pushes, long-running polling, real cleanup reset/amend,
-  or force pushes. Cleanup safety and preview are tested with reads mocked and
-  mutations blocked.
+- No live services, authentication, remote API schema checks, or browser
+  confirmation of GitHub log anchors.
+- No CI collection commits, pushes, long-running polling, cleanup resets,
+  amends, or force pushes. Cleanup tests use fake read responses and block writes.
 - No sandbox worktree lifecycle, tmux, agents, submodules, or Jira cleanup.
-- Jira ADF input validation checks only the top-level `type: doc`, not the full
-  ADF schema. Markdown conversion supports the documented subset, not all CommonMark.
+- Jira input validation checks only the top-level ADF `type: doc`.
+- Markdown conversion supports a subset of CommonMark.
 - Not every Jira formatted metadata field or every CLI file-input variant is
-  covered. Tests target contracts rather than line coverage or implementation
-  internals.
+  covered. Tests focus on behavior rather than line coverage.
 
 The PR-body tests protect stdin argument intermixing on Python 3.11 as well as
-newer interpreters. Anchor tests cover the existing `gh-step-anchor` fix.
+newer interpreters.

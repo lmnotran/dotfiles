@@ -41,7 +41,7 @@ Footer handling:
   standalone issue link proj PR bodies carry at the bottom
   ("[ABC-XXXX](https://...)").
 - It is split off before any section math and re-attached afterwards, so
-  editing the *last* section no longer swallows it. A replacement that
+  editing the *last* section preserves it. A replacement that
   carries its own footer wins over the fetched one.
 
 PRs are looked up via `gh pr view <num> --json body`; edits go through

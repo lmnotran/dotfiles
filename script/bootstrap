@@ -93,7 +93,7 @@ main() {
     if command -v chezmoi &>/dev/null; then
         log_ok "chezmoi already installed"
     else
-        # Remove broken symlink if it exists (leftover from stow)
+        # Use a local bin directory so installation writes into this home.
         [[ -L ~/.local/bin ]] && rm ~/.local/bin
         mkdir -p ~/.local/bin
         sh -c "$(curl -fsLS get.chezmoi.io)" -- -b ~/.local/bin

@@ -5,52 +5,53 @@ Context and rules for AI assistants working on this repository.
 ## Critical Rules
 
 ### Git Operations
-- **NEVER force push without explicit user confirmation** — Always show the command and wait for approval before running:
+- **NEVER force push without explicit user confirmation.** Show the command and wait for approval before running:
   - `git push --force` / `git push -f`
   - `git push --force-with-lease`
   - `git filter-repo` / `git filter-branch`
   - Any history-rewriting operations
-- **NEVER commit secrets** — Use environment variables or Bitwarden Secrets Manager
-- **Skip signing on commits you make** — Use `git commit --no-gpg-sign`, and `git -c commit.gpgsign=false rebase …` for rebases. Signing asks for the GPG passphrase on the terminal in the middle of the session and garbles it. Mason signs his own commits.
-- **Leave re-signing to Mason** — `git filter-repo` and rebases drop signatures. Tell Mason which commits lost theirs instead of re-signing them yourself.
-- **Use conventional commits** — Format: `type(scope): description` (e.g., `docs:`, `fix:`, `refactor:`, `chore:`)
-- **Prefer amending commits** — When fixing something related to the previous commit, use `git commit --amend` to keep history clean rather than creating fixup commits. Update the commit message if needed to reflect the newly added changes. Logically independent changes should always be separate commits.
+- **NEVER commit secrets.** Use environment variables or Bitwarden Secrets Manager.
+- **Skip signing on commits you make.** Use `git commit --no-gpg-sign` and `git -c commit.gpgsign=false rebase …` for rebases.
+- Signing prompts garble the terminal during agent sessions. Mason signs his own commits.
+- **Leave re-signing to Mason.** `git filter-repo` and rebases drop signatures. Tell Mason which commits lost theirs.
+- **Use conventional commits:** `type(scope): description`, such as `docs:`, `fix:`, `refactor:`, or `chore:`.
+- **Prefer amending commits** when fixing something related to the previous commit. Use `git commit --amend` instead of a fixup commit.
+- Update the commit message to cover added changes. Use separate commits for independent changes.
 
 ## Repository Structure
 
-### Current Setup (GNU Stow)
-- `stow/` — Dotfiles packages managed via GNU Stow (symlinked to `$HOME`)
-  - `zsh/`, `git/`, `nvim/`, `tmux/`
-- `machine-specific-config/` — Per-machine configs sourced at runtime by hostname
-- `script/` — Setup and utility scripts
-- `docker/` — Docker compose configs for self-hosted services (not dotfiles)
-
-### Chezmoi Setup
-- `chezmoi/` — Dotfiles source directory (specified via `.chezmoiroot`)
-- Uses Go templates for machine-specific config (`{{ .chezmoi.hostname }}`, etc.)
-- `run_once_before_*` scripts delegate to `script/install-deps`
-- One-liner setup: `sh -c "$(curl -fsLS get.chezmoi.io)" -- init --apply lmnotran/dotfiles`
+### Current Setup (chezmoi)
+- `chezmoi/` holds managed dotfiles and CLI helpers. `.chezmoiroot` selects this subdirectory.
+- Edit managed files in `chezmoi/`, not their installed copies in `$HOME`
+- Go templates handle machine-specific settings. `chezmoi/.chezmoidata.toml` holds shared template data.
+- `script/bootstrap` applies chezmoi from an existing clone.
+- `run_once_before_01-install-deps.sh.tmpl` runs `script/install-deps`.
+- `script/` holds setup and utility scripts.
+- Read `tests/tooling/README.md` when changing CLI helpers. Their offline tests live in `tests/tooling/`.
+- `.github/workflows/` holds dotfiles validation and tooling-test CI.
+- Read `docs/openchamber.md` when installing, updating, or troubleshooting OpenChamber.
+- `stow/karabiner/` holds Karabiner config. Use the Stow targets in `Makefile` to apply it.
 
 ## Secrets Management
 
 - Secrets are stored in **Bitwarden Secrets Manager**
-- `script/load-secrets` fetches secrets by UUID and exports them as env vars
+- `script/load-secrets` fetches secrets by UUID and prints shell export statements
 - The UUIDs in `load-secrets` are safe to commit (they're references, not values)
-- Docker compose files use `${VAR:?must be set}` pattern
+- The `secrets` shell function evaluates the exports from `script/load-secrets`
 
 ## User Preferences
 
 - Owner: Mason Tran
 - Primary machines: allston-st (Linux), various macOS and Linux hosts
-- Work detection: username prefix `usmastra` OR `username@hostname` listed in `.chezmoidata.toml`
+- Work detection: username starts with `usmastra` or `username@hostname` is listed in `chezmoi/.chezmoidata.toml`
 - Shell: zsh with antidote plugin manager
 - Editor: neovim (or VS Code in VS Code terminal)
 
 ### Maintenance Philosophy
-- **Minimize maintenance overhead** — This is a personal dotfiles repo, not production infrastructure
-- **Avoid version pinning** — Use latest stable versions of tools (chezmoi, neovim, etc.) rather than pinning specific versions
-- **No Dependabot/Renovate** — Not worth the noise for a single-user repo
-- **Prefer simplicity** — Choose straightforward solutions over clever abstractions
+- **Minimize maintenance overhead.** This is a personal dotfiles repo.
+- **Avoid version pinning.** Use the latest stable tools.
+- **No Dependabot or Renovate.** The notifications aren't worth it for a single-user repo.
+- **Prefer simplicity.** Choose straightforward solutions over clever abstractions.
 
 ## Common Tasks
 
