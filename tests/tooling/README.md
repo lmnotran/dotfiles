@@ -41,6 +41,7 @@ agents, or edits a user's repo.
 | [`prose-lint`](test_prose_lint.py) | Rule matches and allowed text. Baselines, word limits, Markdown, Atlassian Document Format (ADF), and CLI exit codes. |
 | [`gh-review-body`](test_review_body.py) | Review selection, pagination, payloads, stdin editing, and verified writes. |
 | [`gh-run-timings`](test_run_timings.py) | Duration calculations, pagination, filters, sorting, skipped steps, and empty results. |
+| [`gh-queue-times`](test_queue_times.py) | Date-window run search, deduplication, job fetches, and caching. Rate-limit retries, queue-time stats, filters, output formats, and argument errors. |
 | [`gh-run-failures`](test_run_failures.py) | Error extraction, cleanup, deduplication, and failed-step links. Polling, run states, and exit codes. |
 | [`gh-artifact-file`](test_artifact_file.py) | Artifact selection, pagination, file reads, and citations. Missing artifacts, invalid options, and insufficient matches. |
 | [`p11-image-build`](test_p11_image_build.py) | Image discovery, parent order, tags, and build targets. Preview and builder commands. |

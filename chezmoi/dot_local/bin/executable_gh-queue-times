@@ -1,0 +1,391 @@
+#!/usr/bin/env python3
+"""gh-queue-times — job queue times across many GitHub Actions runs.
+
+Usage:
+    gh-queue-times --workflow ID-OR-FILE --since YYYY-MM-DD [--until YYYY-MM-DD]
+                   [-R OWNER/REPO] [--event EVENT] [--branch BRANCH]
+                   [--label REGEX] [--job REGEX] [--first-attempt]
+                   [--by month|week|day|all] [--csv PATH] [--json]
+                   [--workers N] [--refresh]
+
+Queue time is a job's started_at minus its created_at: how long the job waited
+for a runner once it was ready to run. It doesn't include time spent waiting on
+the jobs it needs. Skipped jobs are left out. Jobs that never got a runner, such
+as ones cancelled while queued, count in the NEVER RAN column, not in the stats.
+
+The tool lists the workflow's runs created between --since and --until (UTC
+dates, inclusive), then fetches each run's jobs from every attempt. Finished
+runs are cached under ~/.cache/gh-queue-times, so running it again only fetches
+new runs. Repo is inferred from `gh` context unless -R is given.
+
+Prints one row per runner-label set and period: job count, median, p90
+(nearest rank) and max queue time. --csv also writes one row per job.
+
+Examples:
+    gh-queue-times --workflow 268112902 --since 2026-04-01 --label HW4
+    gh-queue-times -R LEGO-CPL/p11-firmware --workflow product.yml \\
+        --since 2026-10-01 --until 2026-10-31 --by week --csv october.csv
+    gh-queue-times --workflow 268112902 --since 2026-05-05 --until 2026-06-02 \\
+        --label 'HW4,FDK$' --first-attempt --by day --json
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import math
+import os
+import re
+import statistics
+import subprocess
+import sys
+import time
+from collections import defaultdict
+from collections.abc import Iterable, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict, dataclass
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+Json = dict[str, Any]
+
+# GitHub returns at most 1,000 runs for a filtered workflow-run search.
+MAX_FILTERED_RESULTS = 1000
+PAGE_SIZE = 100
+RATE_LIMIT_FLOOR = 200
+FETCH_BATCH = 100
+# Server errors and secondary rate limits usually clear up, so those calls are retried after these waits.
+RETRY_DELAYS = (10, 30, 90, 270)
+TRANSIENT_ERROR = re.compile(r"HTTP (?:5\d\d|429)\b|secondary rate limit|timed out|connection reset", re.IGNORECASE)
+JOB_FIELDS = (
+    "id", "run_id", "run_attempt", "name", "workflow_name", "head_branch", "head_sha",
+    "status", "conclusion", "created_at", "started_at", "completed_at",
+    "labels", "runner_name", "runner_group_name", "html_url",
+)
+CSV_FIELDS = (
+    "run_id", "run_attempt", "event", "branch", "job_id", "job_name", "labels",
+    "runner", "conclusion", "created_at", "started_at", "completed_at", "queue_seconds", "url",
+)
+
+
+@dataclass(frozen=True)
+class JobRecord:
+    run_id: int
+    run_attempt: int
+    event: str
+    branch: str
+    job_id: int
+    name: str
+    labels: str
+    runner: str
+    conclusion: str
+    created_at: datetime
+    started_at: datetime | None
+    completed_at: datetime | None
+    url: str
+
+    @property
+    def got_runner(self) -> bool:
+        return bool(self.runner)
+
+    @property
+    def queue_seconds(self) -> float | None:
+        if not self.got_runner or self.started_at is None:
+            return None
+        return max(0.0, (self.started_at - self.created_at).total_seconds())
+
+
+@dataclass(frozen=True)
+class Summary:
+    labels: str
+    period: str
+    jobs: int
+    median_seconds: float | None
+    p90_seconds: float | None
+    max_seconds: float | None
+    never_ran: int
+
+
+def parse_ts(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def parse_day(value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected YYYY-MM-DD, got: {value}") from None
+
+
+def fmt_duration(seconds: float | None) -> str:
+    if seconds is None:
+        return "-"
+    s = int(round(seconds))
+    if s < 60:
+        return f"{s}s"
+    m, s = divmod(s, 60)
+    if m < 60:
+        return f"{m}m{s:02d}s"
+    h, m = divmod(m, 60)
+    return f"{h}h{m:02d}m"
+
+
+def gh_api(path: str, params: dict[str, str] | None = None, jq: str | None = None) -> str:
+    cmd = ["gh", "api", "-X", "GET", path]
+    for key, value in (params or {}).items():
+        cmd += ["-f", f"{key}={value}"]
+    if jq is not None:
+        cmd += ["--paginate", "--jq", jq]
+    for delay in (*RETRY_DELAYS, None):
+        try:
+            return subprocess.check_output(cmd, text=True, stderr=subprocess.PIPE)
+        except subprocess.CalledProcessError as error:
+            stderr = error.stderr or ""
+            lines = stderr.strip().splitlines()
+            reason = lines[-1] if lines else f"exit code {error.returncode}"
+            if delay is None or not TRANSIENT_ERROR.search(stderr):
+                sys.exit(f"gh api {path} failed: {reason}")
+            print(f"gh api {path}: {reason}. Retrying in {delay}s", file=sys.stderr)
+            time.sleep(delay)
+    raise AssertionError("retry loop always returns or exits")
+
+
+def resolve_repo(repo: str | None) -> str:
+    if repo:
+        if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
+            sys.exit(f"--repo must be OWNER/REPO, got: {repo}")
+        return repo
+    try:
+        out = subprocess.check_output(
+            ["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"], text=True
+        )
+    except subprocess.CalledProcessError:
+        sys.exit("can't tell which repo to read. Run inside a clone or pass -R OWNER/REPO")
+    return out.strip()
+
+
+def list_runs(repo: str, workflow: str, since: date, until: date, event: str | None, branch: str | None) -> list[Json]:
+    """Runs created in [since, until], splitting the range until each search fits GitHub's cap."""
+    path = f"repos/{repo}/actions/workflows/{workflow}/runs"
+    runs: dict[int, Json] = {}
+    pending = [(since, until)]
+    while pending:
+        start, end = pending.pop()
+        params = {"created": f"{start}..{end}", "per_page": str(PAGE_SIZE), "exclude_pull_requests": "true"}
+        if event:
+            params["event"] = event
+        if branch:
+            params["branch"] = branch
+        first = json.loads(gh_api(path, {**params, "page": "1"}))
+        total = int(first["total_count"])
+        if total > MAX_FILTERED_RESULTS and start < end:
+            middle = start + (end - start) // 2
+            pending += [(start, middle), (middle + timedelta(days=1), end)]
+            continue
+        if total > MAX_FILTERED_RESULTS:
+            print(f"warning: {total} runs on {start}, GitHub only returns the first {MAX_FILTERED_RESULTS}", file=sys.stderr)
+        pages = [first]
+        for page in range(2, math.ceil(min(total, MAX_FILTERED_RESULTS) / PAGE_SIZE) + 1):
+            pages.append(json.loads(gh_api(path, {**params, "page": str(page)})))
+        for body in pages:
+            for run in body["workflow_runs"]:
+                runs[int(run["id"])] = run
+    return sorted(runs.values(), key=lambda run: str(run["created_at"]))
+
+
+def cache_dir(repo: str) -> Path:
+    base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+    return base / "gh-queue-times" / repo.replace("/", "__")
+
+
+def fetch_jobs(repo: str, run: Json, cache: Path, refresh: bool) -> tuple[list[Json], bool]:
+    """Jobs from every attempt of one run, and whether they came from the cache."""
+    key = cache / f"{run['id']}-{run['run_attempt']}.json"
+    if not refresh and key.exists():
+        return json.loads(key.read_text()), True
+    # One call per attempt. Listing every attempt with filter=all is slow for runs that were
+    # rerun several times, and GitHub answers those slow calls with HTTP 502.
+    jobs = []
+    for attempt in range(1, int(run["run_attempt"]) + 1):
+        out = gh_api(f"repos/{repo}/actions/runs/{run['id']}/attempts/{attempt}/jobs", {"per_page": str(PAGE_SIZE)}, jq=".jobs[]")
+        jobs += [{field: job.get(field) for field in JOB_FIELDS} for job in (json.loads(line) for line in out.splitlines() if line.strip())]
+    if run.get("status") == "completed":
+        cache.mkdir(parents=True, exist_ok=True)
+        partial = key.with_suffix(".partial")
+        partial.write_text(json.dumps(jobs))
+        partial.replace(key)
+    return jobs, False
+
+
+def wait_for_rate_limit() -> None:
+    core = json.loads(gh_api("rate_limit"))["resources"]["core"]
+    if int(core["remaining"]) >= RATE_LIMIT_FLOOR:
+        return
+    delay = max(0.0, float(core["reset"]) - time.time()) + 5
+    print(f"rate limit low ({core['remaining']} calls left), waiting {delay / 60:.0f} min for the reset", file=sys.stderr)
+    time.sleep(delay)
+
+
+def collect_jobs(repo: str, runs: Sequence[Json], refresh: bool, workers: int) -> tuple[list[tuple[Json, Json]], int]:
+    """(run, job) pairs for all runs, fetching uncached runs in rate-limit-checked batches."""
+    cache = cache_dir(repo)
+    pairs: list[tuple[Json, Json]] = []
+    fetched = 0
+    for batch_start in range(0, len(runs), FETCH_BATCH):
+        batch = runs[batch_start:batch_start + FETCH_BATCH]
+        if refresh or not all((cache / f"{run['id']}-{run['run_attempt']}.json").exists() for run in batch):
+            wait_for_rate_limit()
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+            results = list(pool.map(lambda run: fetch_jobs(repo, run, cache, refresh), batch))
+        for run, (jobs, cached) in zip(batch, results):
+            fetched += 0 if cached else 1
+            pairs += [(run, job) for job in jobs]
+        if fetched:
+            print(f"runs: {min(batch_start + FETCH_BATCH, len(runs))}/{len(runs)} read, {fetched} fetched", file=sys.stderr)
+    return pairs, fetched
+
+
+def to_records(pairs: Iterable[tuple[Json, Json]], label: str | None, job: str | None, first_attempt: bool) -> list[JobRecord]:
+    records = []
+    for run, raw in pairs:
+        created = parse_ts(raw.get("created_at"))
+        if created is None or raw.get("status") != "completed" or raw.get("conclusion") == "skipped":
+            continue
+        labels = ",".join(raw.get("labels") or []) or "-"
+        if label and not re.search(label, labels):
+            continue
+        if job and not re.search(job, str(raw.get("name", ""))):
+            continue
+        attempt = int(raw.get("run_attempt") or 1)
+        if first_attempt and attempt != 1:
+            continue
+        records.append(JobRecord(
+            run_id=int(raw["run_id"]),
+            run_attempt=attempt,
+            event=str(run.get("event") or "-"),
+            branch=str(raw.get("head_branch") or run.get("head_branch") or "-"),
+            job_id=int(raw["id"]),
+            name=str(raw.get("name", "")),
+            labels=labels,
+            runner=str(raw.get("runner_name") or ""),
+            conclusion=str(raw.get("conclusion") or "-"),
+            created_at=created,
+            started_at=parse_ts(raw.get("started_at")),
+            completed_at=parse_ts(raw.get("completed_at")),
+            url=str(raw.get("html_url") or ""),
+        ))
+    return records
+
+
+def period(ts: datetime, by: str) -> str:
+    if by == "month":
+        return ts.strftime("%Y-%m")
+    if by == "week":
+        return (ts.date() - timedelta(days=ts.weekday())).isoformat()
+    if by == "day":
+        return ts.date().isoformat()
+    return "all"
+
+
+def nearest_rank(sorted_values: Sequence[float], quantile: float) -> float:
+    return sorted_values[max(0, math.ceil(quantile * len(sorted_values)) - 1)]
+
+
+def summarize(records: Iterable[JobRecord], by: str) -> list[Summary]:
+    groups: dict[tuple[str, str], list[JobRecord]] = defaultdict(list)
+    for record in records:
+        groups[(record.labels, period(record.created_at, by))].append(record)
+    summaries = []
+    for (labels, when), members in sorted(groups.items()):
+        waits = sorted(q for q in (m.queue_seconds for m in members) if q is not None)
+        summaries.append(Summary(
+            labels=labels,
+            period=when,
+            jobs=len(waits),
+            median_seconds=statistics.median(waits) if waits else None,
+            p90_seconds=nearest_rank(waits, 0.9) if waits else None,
+            max_seconds=waits[-1] if waits else None,
+            never_ran=sum(1 for m in members if not m.got_runner),
+        ))
+    return summaries
+
+
+def write_csv(path: Path, records: Iterable[JobRecord]) -> None:
+    with path.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(CSV_FIELDS)
+        for r in records:
+            queue = r.queue_seconds
+            writer.writerow([
+                r.run_id, r.run_attempt, r.event, r.branch, r.job_id, r.name, r.labels, r.runner, r.conclusion,
+                r.created_at.isoformat(), r.started_at.isoformat() if r.started_at else "",
+                r.completed_at.isoformat() if r.completed_at else "", "" if queue is None else int(queue), r.url,
+            ])
+
+
+def print_table(summaries: Sequence[Summary]) -> None:
+    label_w = min(max([len("LABELS")] + [len(s.labels) for s in summaries]), 50)
+    print(f"{'LABELS':<{label_w}}  {'PERIOD':<10}  {'JOBS':>6}  {'MEDIAN':>7}  {'P90':>7}  {'MAX':>7}  {'NEVER RAN':>9}")
+    for s in summaries:
+        print(
+            f"{s.labels[:label_w]:<{label_w}}  {s.period:<10}  {s.jobs:>6}  {fmt_duration(s.median_seconds):>7}  "
+            f"{fmt_duration(s.p90_seconds):>7}  {fmt_duration(s.max_seconds):>7}  {s.never_ran:>9}"
+        )
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(
+        description=(__doc__ or "").split("\n\n", 1)[0],
+        epilog=(
+            "Queue time is a job's started_at minus created_at: how long it waited for a runner once it was\n"
+            "ready. Time spent waiting on the jobs it needs isn't included. Skipped jobs are left out. Jobs\n"
+            "that never got a runner count under NEVER RAN. Finished runs are cached under\n"
+            "~/.cache/gh-queue-times, so running it again only fetches new runs."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument("--workflow", required=True, help="Workflow numeric ID or file name, e.g. 268112902 or product.yml")
+    ap.add_argument("--since", required=True, type=parse_day, help="First run-creation date, UTC, YYYY-MM-DD")
+    ap.add_argument("--until", type=parse_day, default=None, help="Last run-creation date, UTC, inclusive (default: today)")
+    ap.add_argument("-R", "--repo", help="OWNER/REPO (default: the current clone's repo)")
+    ap.add_argument("--event", help="Only runs from this event, e.g. push, pull_request, workflow_dispatch")
+    ap.add_argument("--branch", help="Only runs on this branch")
+    ap.add_argument("--label", help="Regex on the job's runner labels joined with commas, e.g. HW4 or 'HW4,FDK$'")
+    ap.add_argument("--job", help="Regex on the job name")
+    ap.add_argument("--first-attempt", action="store_true", help="Only jobs from each run's first attempt")
+    ap.add_argument("--by", choices=["month", "week", "day", "all"], default="month", help="Summary period (default: month)")
+    ap.add_argument("--csv", type=Path, help="Also write one row per job to this file")
+    ap.add_argument("--json", action="store_true", help="Print the summary as JSON instead of a table")
+    ap.add_argument("--workers", type=int, default=4, help="Parallel job fetches (default: 4)")
+    ap.add_argument("--refresh", action="store_true", help="Ignore cached runs and fetch everything again")
+    args = ap.parse_args()
+
+    until = args.until or datetime.now().astimezone().date()
+    if args.since > until:
+        sys.exit(f"--since {args.since} is after --until {until}")
+    repo = resolve_repo(args.repo)
+    runs = list_runs(repo, args.workflow, args.since, until, args.event, args.branch)
+    if not runs:
+        print(f"(no runs of {args.workflow} in {repo} from {args.since} to {until})", file=sys.stderr)
+        sys.exit(1)
+    pairs, fetched = collect_jobs(repo, runs, args.refresh, args.workers)
+    records = to_records(pairs, args.label, args.job, args.first_attempt)
+    print(f"{len(runs)} runs ({len(runs) - fetched} cached, {fetched} fetched), {len(records)} jobs matched", file=sys.stderr)
+    if args.csv:
+        write_csv(args.csv, records)
+    if not records:
+        print("(no jobs matched)", file=sys.stderr)
+        sys.exit(1)
+    summaries = summarize(records, args.by)
+    if args.json:
+        json.dump([asdict(s) for s in summaries], sys.stdout, indent=2)
+        sys.stdout.write("\n")
+    else:
+        print_table(summaries)
+
+
+if __name__ == "__main__":
+    main()
