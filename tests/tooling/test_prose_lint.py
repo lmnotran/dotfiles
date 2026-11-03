@@ -105,6 +105,54 @@ def test_bullet_length_skips_a_long_item_the_baseline_already_has(lint: ModuleTy
     assert [(finding.where, finding.rule) for finding in findings] == [("2", "bullet-length")]
 
 
+def test_repeated_prefix_flags_items_in_a_row_that_open_with_the_same_path(lint: ModuleType) -> None:
+    # Given a Changes list whose first three items repeat their file's path, across a
+    # continuation line and a blank line
+    text = (
+        "## Changes\n\n- `cmake/pip.cmake`: stop on a bad version.\n"
+        "- `cmake/pip.cmake`: stop on a missing module.\n  It names the module.\n\n"
+        "- `cmake/pip.cmake`: keep pip best effort.\n- README: add the setup steps.\n"
+    )
+    # When
+    findings = lint.lint_markdown(text)
+    # Then
+    assert [(finding.where, finding.rule, finding.excerpt) for finding in findings] == [
+        ("3", "repeated-prefix", "`cmake/pip.cmake`: opens 3 items in a row"),
+    ]
+
+
+@pytest.mark.parametrize("marker", ["\u2728 ", "\U0001F5D1\uFE0F "])
+def test_repeated_prefix_sees_past_a_new_or_deleted_file_marker(lint: ModuleType, marker: str) -> None:
+    # Given two items about one file, each marked as new or deleted
+    text = f"- {marker}`.github/actions/x/action.yml`: one.\n- {marker}`.github/actions/x/action.yml`: two.\n"
+    # When / Then
+    assert rules(lint.lint_markdown(text)) == ["repeated-prefix"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "## Changes\n`cmake/pip.cmake`\n- stop on a bad version.\n- keep pip best effort.\n\n`README.md`\n- add it.\n",
+        "- `a.py`: one thing.\n- `b.py`: another thing.\n",
+        "- `a.py`: one thing.\n- a plain item.\n- `a.py`: another thing.\n",
+        "- [x] `a.py`: one case.\n- [x] `a.py`: another case.\n",
+    ],
+)
+def test_repeated_prefix_skips_lists_that_do_not_repeat_a_prefix(lint: ModuleType, text: str) -> None:
+    assert lint.lint_markdown(text) == []
+
+
+def test_repeated_prefix_skips_a_run_the_baseline_already_has_until_it_grows(lint: ModuleType) -> None:
+    # Given an old body whose list already repeats a prefix
+    old = "- `a.py`: one.\n- `a.py`: two.\n"
+    # When an edit only adds a paragraph / When an edit adds a third item to the run
+    untouched = lint.lint_markdown(old + "\nA new paragraph.\n", baseline=old)
+    grown = lint.lint_markdown(old + "- `a.py`: three.\n", baseline=old)
+    # Then
+    assert untouched == []
+    assert rules(grown) == ["repeated-prefix"]
+
+
 def paragraph(*inlines: dict) -> dict:
     return {"type": "paragraph", "content": list(inlines)}
 
