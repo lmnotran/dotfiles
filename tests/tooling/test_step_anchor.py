@@ -383,3 +383,47 @@ def test_json_text_when_ansi_codes_in_line(anchor: ModuleType, monkeypatch: pyte
     anchor.main()
     # Then
     assert json.loads(output.getvalue()) == [{"step": 1, "line": 2, "text": "2026-01-01T00:00:00Z 43 passed, 262 deselected", "url": URL + "#step:1:2"}]
+
+
+# The runner prints a run step's script in a "Run" group at the top of the step, and a composite
+# step's script after its start-action marker. "Run tests" is a group the script itself opens.
+SCRIPT_STEP: Final = (
+    '##[group]Run echo "TARGET"\necho "TARGET"\nshell: /usr/bin/bash -e {0}\n##[endgroup]\nTARGET\n'
+    '##[start-action display=Report;id=report]\n##[group]Run echo "TARGET inner"\necho "TARGET inner"\n##[endgroup]\n'
+    "TARGET inner\n##[end-action id=report;outcome=success]\n"
+    "##[group]Run tests\nTARGET in a group\n##[endgroup]\n"
+)
+
+
+def serve_step(anchor: ModuleType, monkeypatch: pytest.MonkeyPatch, step: str) -> None:
+    metadata = {"run_id": 42, "run_attempt": 1, "html_url": URL, "status": "completed", "steps": [{"number": 1}]}
+    responses = {
+        "repos/owner/repo/actions/jobs/17": json.dumps(metadata).encode(),
+        "repos/owner/repo/actions/jobs/17/logs": step.encode(),
+        "repos/owner/repo/actions/runs/42/attempts/1/logs": archive_bytes({"-1_build.txt": step, "build/1_Run echo.txt": step}),
+    }
+    monkeypatch.setattr(anchor, "gh", Mock(side_effect=responses.__getitem__))
+
+
+@pytest.mark.parametrize(("flags", "lines"), [([], [5, 10, 13]), (["--include-header"], [1, 2, 5, 7, 8, 10, 13])])
+def test_step_headers_skipped_unless_included(anchor: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+                                              flags: list[str], lines: list[int]) -> None:
+    # Given
+    serve_step(anchor, monkeypatch, SCRIPT_STEP)
+    monkeypatch.setattr(sys, "argv", ["gh-step-anchor", URL, "TARGET", "--all", "--json", *flags])
+    # When
+    anchor.main()
+    # Then
+    assert [match["line"] for match in json.loads(capsys.readouterr().out)] == lines
+
+
+def test_cli_hint_when_pattern_only_matches_a_step_header(anchor: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    # Given
+    serve_step(anchor, monkeypatch, SCRIPT_STEP)
+    monkeypatch.setattr(sys, "argv", ["gh-step-anchor", URL, "shell: "])
+    # When
+    with pytest.raises(SystemExit) as error:
+        anchor.main()
+    # Then
+    assert error.value.code == 1
+    assert "--include-header" in capsys.readouterr().err
