@@ -10,6 +10,11 @@ line, and skips matching lines whose step it can't pin down. Line numbers count
 every line of the step's log, including the ##[endgroup] and ##[end-action] lines
 the log viewer hides, because that's how GitHub resolves #step:N:L links. The
 number the viewer shows next to a line can be lower.
+
+It skips the header the runner prints at the top of each step and composite step:
+a run step's script, a uses step's inputs, and the shell and env lines. So a
+pattern for what a script prints finds the output, not the echo command that
+prints it. --include-header matches in headers too.
 """
 
 import argparse
@@ -34,6 +39,7 @@ PREPARE_ACTIONS: Final = "Prepare all required actions"
 PREPARE_DETAILS: Final = ("Getting action download info", "Download action repository ",
                           "##[group]Download immutable action package ", "Version: ", "Digest: ",
                           "Source commit SHA: ", "##[endgroup]", "##[debug]")
+RUN_HEADER: Final = "##[group]Run "
 
 
 class AnchorError(Exception):
@@ -216,6 +222,32 @@ def resolve_step_logs(archive: ZipFile | None, job_log: str, steps: list[dict[st
         return split_by_step_times(job_log, steps, pattern)
 
 
+def step_headers(lines: list[str]) -> set[int]:
+    """Indexes of the lines in a step's headers: each "##[group]Run ..." group through its ##[endgroup].
+
+    A header opens the step, after any action preparation, or follows a composite step's
+    start-action marker. A "Run ..." group the step's own output opens is not a header, and
+    neither is one that never closes.
+    """
+    texts = [match[2] if (match := STAMPED_LINE.match(line)) else line for line in lines]
+    headers: set[int] = set()
+    may_open = True
+    index = 0
+    while index < len(texts):
+        text = texts[index]
+        if may_open and text.startswith(RUN_HEADER):
+            end = next((later for later in range(index + 1, len(texts)) if texts[later].startswith("##[endgroup]")), None)
+            if end is None:
+                break
+            headers.update(range(index, end + 1))
+            index, may_open = end + 1, False
+            continue
+        may_open = text.startswith("##[start-action") or (
+            may_open and (text == PREPARE_ACTIONS or text.startswith(PREPARE_DETAILS)))
+        index += 1
+    return headers
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("job", help="job ID or GitHub Actions job URL")
@@ -226,6 +258,9 @@ def main() -> None:
     parser.add_argument("--step", type=int, help="restrict to this API/UI step number")
     parser.add_argument("--all", action="store_true", help="print every matching line, not just the first")
     parser.add_argument("--json", action="store_true", help="emit matches with step, line, text and URL")
+    parser.add_argument("--include-header", action="store_true",
+                        help="also match in step headers: a run step's script, a uses step's inputs, and the "
+                             "shell and env lines the runner prints above a step's output")
     args = parser.parse_args()
     try:
         pattern = re.compile(args.pattern)
@@ -252,17 +287,26 @@ def main() -> None:
         if any(number not in job.steps for number, _ in logs):
             raise AnchorError("archive step numbers disagree with job metadata; refusing to guess")
         matches = []
+        header_matches = 0
         for number, lines in logs:
             if args.step is not None and number != args.step:
                 continue
+            headers = set() if args.include_header else step_headers(lines)
             for line_number, line in enumerate(lines, 1):
-                if line_matches(pattern, line):
-                    matches.append({"step": number, "line": line_number, "text": ANSI_ESCAPE.sub("", line),
-                                    "url": f"{job.url.split('#')[0]}#step:{number}:{line_number}"})
-                    if not args.all:
-                        break
+                if not line_matches(pattern, line):
+                    continue
+                if line_number - 1 in headers:
+                    header_matches += 1
+                    continue
+                matches.append({"step": number, "line": line_number, "text": ANSI_ESCAPE.sub("", line),
+                                "url": f"{job.url.split('#')[0]}#step:{number}:{line_number}"})
+                if not args.all:
+                    break
             if matches and not args.all:
                 break
+        if not matches and header_matches:
+            raise AnchorError("pattern only matched in step headers, the script or inputs the runner prints above "
+                              f"a step's output. Pass --include-header to match there: {args.pattern}")
         if not matches:
             raise AnchorError(f"pattern not matched in available step logs: {args.pattern}")
         if args.json:
