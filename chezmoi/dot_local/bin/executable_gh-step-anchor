@@ -15,6 +15,12 @@ It skips the header the runner prints at the top of each step and composite step
 a run step's script, a uses step's inputs, and the shell and env lines. So a
 pattern for what a script prints finds the output, not the echo command that
 prints it. --include-header matches in headers too.
+
+With --run, the job argument is a regular expression for a job's name in that
+run's latest attempt, like "unittest-ci-scripts" for "Build / trigger_unit_test /
+unittest-ci-scripts". It must match exactly one job. --text prints each link with
+the line it points at. Transient GitHub errors (an HTTP/2 stream error, a 502,
+503, or 504, or a reset connection) are retried twice before giving up.
 """
 
 import argparse
@@ -23,6 +29,7 @@ import json
 import re
 import subprocess
 import sys
+import time
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from itertools import pairwise
@@ -40,6 +47,12 @@ PREPARE_DETAILS: Final = ("Getting action download info", "Download action repos
                           "##[group]Download immutable action package ", "Version: ", "Digest: ",
                           "Source commit SHA: ", "##[endgroup]", "##[debug]")
 RUN_HEADER: Final = "##[group]Run "
+# gh's error output for failures worth another try, like "stream error: stream ID 1; CANCEL;
+# received from peer" when GitHub drops an HTTP/2 stream mid-download.
+TRANSIENT_ERROR: Final = re.compile(r"stream error|connection reset|unexpected EOF|i/o timeout|"
+                                    r"TLS handshake timeout|HTTP 50[234]")
+RETRY_DELAYS: Final = (2.0, 5.0)
+JOBS_PER_PAGE: Final = 100
 
 
 class AnchorError(Exception):
@@ -70,7 +83,7 @@ class Step:
     completed: str
 
 
-def gh(endpoint: str) -> bytes:
+def gh_once(endpoint: str) -> bytes:
     result = subprocess.run(["gh", "api", endpoint], capture_output=True, timeout=120, check=False)
     if result.returncode != 0:
         message = result.stderr.decode("utf-8", "replace").strip()
@@ -78,11 +91,27 @@ def gh(endpoint: str) -> bytes:
     return result.stdout
 
 
+def gh(endpoint: str) -> bytes:
+    for delay in RETRY_DELAYS:
+        try:
+            return gh_once(endpoint)
+        except ApiError as error:
+            if not TRANSIENT_ERROR.search(str(error)):
+                raise
+            print(f"gh-step-anchor: retrying in {delay:g}s after: {str(error).splitlines()[-1]}", file=sys.stderr)
+            time.sleep(delay)
+    return gh_once(endpoint)
+
+
+def api_repo(repo: str | None) -> str:
+    if repo and not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
+        raise AnchorError("--repo must be OWNER/REPO")
+    return f"repos/{repo or '{owner}/{repo}'}"
+
+
 def job_target(value: str, repo: str | None) -> tuple[str, str]:
     if value.isdecimal():
-        if repo and not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
-            raise AnchorError("--repo must be OWNER/REPO")
-        return f"repos/{repo or '{owner}/{repo}'}", value
+        return api_repo(repo), value
     url = urlsplit(value)
     match = re.fullmatch(r"/([\w.-]+/[\w.-]+)/actions/runs/\d+/job/(\d+)/?", url.path)
     if url.scheme != "https" or url.netloc != "github.com" or not match:
@@ -90,6 +119,41 @@ def job_target(value: str, repo: str | None) -> tuple[str, str]:
     if repo and repo.lower() != match[1].lower():
         raise AnchorError("--repo conflicts with the job URL's repository")
     return f"repos/{match[1]}", match[2]
+
+
+def run_target(value: str, repo: str | None) -> tuple[str, str]:
+    if value.isdecimal():
+        return api_repo(repo), value
+    url = urlsplit(value)
+    match = re.fullmatch(r"/([\w.-]+/[\w.-]+)/actions/runs/(\d+)(?:/attempts/\d+)?/?", url.path)
+    if url.scheme != "https" or url.netloc != "github.com" or not match:
+        raise AnchorError("--run expects a numeric run ID or https://github.com/OWNER/REPO/actions/runs/RUN URL")
+    if repo and repo.lower() != match[1].lower():
+        raise AnchorError("--repo conflicts with the run URL's repository")
+    return f"repos/{match[1]}", match[2]
+
+
+def find_job(repo: str, run_id: str, name: re.Pattern[str]) -> str:
+    """The ID of the one job in the run's latest attempt whose name the pattern matches."""
+    jobs: list[dict[str, Any]] = []
+    for page in range(1, 100):
+        batch = json.loads(gh(f"{repo}/actions/runs/{run_id}/jobs?filter=latest&per_page={JOBS_PER_PAGE}&page={page}"))["jobs"]
+        jobs += batch
+        if len(batch) < JOBS_PER_PAGE:
+            break
+    found = [job for job in jobs if name.search(job["name"])]
+    if len(found) == 1:
+        return str(found[0]["id"])
+    if not found:
+        raise AnchorError(f"no job in run {run_id} matches {name.pattern!r}")
+    names = "; ".join(job["name"] for job in found)
+    raise AnchorError(f"{len(found)} jobs in run {run_id} match {name.pattern!r}, narrow the pattern: {names}")
+
+
+def shown_text(line: str) -> str:
+    """The log line without GitHub's timestamp, for --text output."""
+    stamped = STAMPED_LINE.match(line)
+    return stamped[2] if stamped else line
 
 
 def log_lines(text: str) -> list[str]:
@@ -250,21 +314,30 @@ def step_headers(lines: list[str]) -> set[int]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("job", help="job ID or GitHub Actions job URL")
+    parser.add_argument("job", help="job ID or GitHub Actions job URL. With --run, a regular expression for the "
+                                    "job's name")
     parser.add_argument("pattern", help="regular expression to find in the log. Each line is tried with and "
                                         "without GitHub's leading timestamp, so ^ anchors to the log text. "
                                         "ANSI color codes are removed before matching")
-    parser.add_argument("-R", "--repo", help="OWNER/REPO for a numeric job ID")
+    parser.add_argument("-R", "--repo", help="OWNER/REPO for a numeric job or run ID")
+    parser.add_argument("--run", help="run ID or run URL. Finds the job by name in the run's latest attempt")
     parser.add_argument("--step", type=int, help="restrict to this API/UI step number")
     parser.add_argument("--all", action="store_true", help="print every matching line, not just the first")
-    parser.add_argument("--json", action="store_true", help="emit matches with step, line, text and URL")
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument("--json", action="store_true", help="emit matches with step, line, text and URL")
+    output.add_argument("--text", action="store_true",
+                        help="print each URL with the line it points at, without the timestamp")
     parser.add_argument("--include-header", action="store_true",
                         help="also match in step headers: a run step's script, a uses step's inputs, and the "
                              "shell and env lines the runner prints above a step's output")
     args = parser.parse_args()
     try:
         pattern = re.compile(args.pattern)
-        repo, job_id = job_target(args.job, args.repo)
+        if args.run:
+            repo, run_id = run_target(args.run, args.repo)
+            job_id = find_job(repo, run_id, re.compile(args.job))
+        else:
+            repo, job_id = job_target(args.job, args.repo)
         raw = json.loads(gh(f"{repo}/actions/jobs/{job_id}"))
         if raw["status"] != "completed":
             raise AnchorError("job must be completed before its step logs can be downloaded")
@@ -286,7 +359,7 @@ def main() -> None:
                 logs = resolve_step_logs(zip_file, job_log, raw["steps"], pattern)
         if any(number not in job.steps for number, _ in logs):
             raise AnchorError("archive step numbers disagree with job metadata; refusing to guess")
-        matches = []
+        matches: list[dict[str, Any]] = []
         header_matches = 0
         for number, lines in logs:
             if args.step is not None and number != args.step:
@@ -311,6 +384,9 @@ def main() -> None:
             raise AnchorError(f"pattern not matched in available step logs: {args.pattern}")
         if args.json:
             print(json.dumps(matches, ensure_ascii=False, indent=2))
+        elif args.text:
+            for match in matches:
+                print(f"{match['url']}  {shown_text(match['text'])}")
         else:
             for match in matches:
                 print(match["url"])
