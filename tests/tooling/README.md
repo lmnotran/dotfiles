@@ -39,6 +39,7 @@ agents, or edits a user's repo.
 | [`gh-pr-grep`](test_pr_grep.py) | Diff parsing and line numbers, path prefilters, generated files, long lines, and sides. Failed diffs, JSON output, exit codes, and repo selection. |
 | [`gh-pr-merge`](test_pr_merge.py) | Merge blockers, reason comments, admin overrides, and dry runs. Checkbox parsing and follow-up notes. |
 | [`gh-pr-state`](test_pr_state.py) | Reviews, threads, checkboxes, checks, and branch protection. Unknown states and repo selection. |
+| [`gh-pr-trial`](test_pr_trial.py) | Push, cancel, wait, and revert order. Failed and unfinished runs, branch safety refusals, and repo selection. Real pushes aren't tested. |
 | [`prose-lint`](test_prose_lint.py) | Rule matches and allowed text. Baselines, word limits, Markdown, Atlassian Document Format (ADF), and CLI exit codes. |
 | [`gh-review-body`](test_review_body.py) | Review selection, pagination, payloads, stdin editing, and verified writes. |
 | [`gh-run-timings`](test_run_timings.py) | Duration calculations, pagination, filters, sorting, skipped steps, and empty results. |
