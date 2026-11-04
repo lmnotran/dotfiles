@@ -1,0 +1,213 @@
+#!/usr/bin/env python3
+"""gh-incidents — the incidents GitHub reports on githubstatus.com.
+
+Usage:
+    gh-incidents [--since TIME] [--json]
+
+Prints GitHub's overall status, any component that isn't operational, and the
+incidents still open, each with every update GitHub posted. --since also lists
+the incidents resolved since TIME, so you can check a run that failed or
+stalled after GitHub has closed the incident. TIME is a UTC time such as
+2026-11-04T17:22Z or 2026-11-04, or a duration back from now such as 90m, 6h,
+or 2d.
+
+An incident's time is when GitHub posted it, sometimes well after the problem
+started, so an all-clear for the last hour may not hold. Many incidents name no
+component, so read the updates rather than the component list. The feed holds
+GitHub's last 50 incidents, and --since warns when it reaches past them.
+
+Exit status: 0 when no incident is open or resolved since TIME and every
+component is operational, 1 otherwise, 3 when githubstatus.com can't be read.
+
+Examples:
+    gh-incidents
+    gh-incidents --since 2h
+    gh-incidents --since 2026-11-04T17:15Z --json
+"""
+
+import argparse
+import http.client
+import json
+import re
+import sys
+import urllib.request
+from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any, Final
+
+PAGE: Final = "https://www.githubstatus.com"
+DURATION: Final = re.compile(r"(\d+)([mhd])")
+UNIT_SECONDS: Final = {"m": 60, "h": 3600, "d": 86400}
+LATE_NOTE: Final = ("GitHub can post an incident well after a problem starts. If something still looks wrong,"
+                    " run this again later with --since set to when it started.")
+
+
+class StatusPageError(Exception):
+    """githubstatus.com couldn't be read, or answered with something unexpected."""
+
+
+@dataclass(frozen=True, slots=True)
+class Update:
+    at: datetime
+    status: str
+    body: str
+
+
+@dataclass(frozen=True, slots=True)
+class Incident:
+    name: str
+    impact: str
+    status: str
+    posted: datetime
+    resolved: datetime | None
+    components: tuple[str, ...]
+    url: str
+    updates: tuple[Update, ...]  # oldest first
+
+
+@dataclass(frozen=True, slots=True)
+class Component:
+    name: str
+    status: str
+
+
+@dataclass(frozen=True, slots=True)
+class Report:
+    status: str  # GitHub's overall status now, such as "All Systems Operational"
+    indicator: str  # "none" when GitHub reports no problem
+    affected: tuple[Component, ...]  # components that aren't operational now
+    incidents: tuple[Incident, ...]  # oldest first
+    since: datetime | None
+    feed_start: datetime | None  # when GitHub posted the oldest incident in the feed, with --since
+
+    @property
+    def clear(self) -> bool:
+        return self.indicator == "none" and not self.affected and not self.incidents
+
+
+def fetch(feed: str) -> dict[str, Any]:
+    """One of githubstatus.com's Statuspage API feeds, such as summary or incidents."""
+    url = f"{PAGE}/api/v2/{feed}.json"
+    try:
+        with urllib.request.urlopen(url, timeout=30) as response:
+            data: dict[str, Any] = json.load(response)
+    except (OSError, ValueError, http.client.HTTPException) as error:
+        raise StatusPageError(f"can't read {url}: {error}") from error
+    return data
+
+
+def moment(value: str) -> datetime:
+    return datetime.fromisoformat(value).astimezone(timezone.utc)
+
+
+def parse_incident(raw: dict[str, Any]) -> Incident:
+    updates = (Update(moment(update.get("display_at") or update["created_at"]), update["status"],
+                      " ".join(update["body"].split()))
+               for update in reversed(raw.get("incident_updates") or []))
+    return Incident(
+        name=raw["name"], impact=raw["impact"], status=raw["status"], posted=moment(raw["created_at"]),
+        resolved=moment(raw["resolved_at"]) if raw.get("resolved_at") else None,
+        components=tuple(component["name"] for component in raw.get("components") or []),
+        url=raw.get("shortlink") or f"{PAGE}/incidents/{raw['id']}",
+        updates=tuple(sorted(updates, key=lambda update: update.at)),
+    )
+
+
+def collect(since: datetime | None) -> Report:
+    """GitHub's status now, with the incidents open now or resolved since `since`."""
+    summary = fetch("summary")
+    history = fetch("incidents") if since is not None else summary
+    try:
+        feed = [parse_incident(raw) for raw in history["incidents"]]
+        # An incident's end, not when it was posted, decides the overlap: retroactive ones are posted after they end.
+        overlapping = [incident for incident in feed
+                       if incident.resolved is None or (since is not None and incident.resolved >= since)]
+        return Report(
+            status=summary["status"]["description"], indicator=summary["status"]["indicator"],
+            affected=tuple(Component(component["name"], component["status"]) for component in summary["components"]
+                           if component["status"] != "operational"),
+            incidents=tuple(sorted(overlapping, key=lambda incident: incident.posted)),
+            since=since,
+            feed_start=min((incident.posted for incident in feed), default=None) if since is not None else None,
+        )
+    except (KeyError, TypeError, ValueError, AttributeError) as error:
+        raise StatusPageError(f"unexpected answer from {PAGE}: {error!r}") from error
+
+
+def parse_time(value: str, now: datetime) -> datetime:
+    """A UTC time, such as 2026-11-04T17:22Z or 2026-11-04, or a duration before `now`, such as 90m."""
+    duration = DURATION.fullmatch(value)
+    if duration:
+        return now - timedelta(seconds=int(duration[1]) * UNIT_SECONDS[duration[2]])
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        raise ValueError(f"expected a time like 2026-11-04T17:22Z or a duration like 6h, got {value!r}") from None
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+
+
+def stamp(value: datetime, day: datetime | None = None) -> str:
+    """`value` in UTC, without the date when it falls on the same day as `day`."""
+    if day is not None and value.date() == day.date():
+        return value.strftime("%H:%MZ")
+    return value.strftime("%Y-%m-%d %H:%MZ")
+
+
+def utc(value: datetime) -> str:
+    return value.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def incident_lines(incident: Incident) -> list[str]:
+    components = ", ".join(incident.components) or "no component named"
+    end = (f"resolved {stamp(incident.resolved, incident.posted)}" if incident.resolved is not None
+           else f"open ({incident.status})")
+    return [
+        f"{incident.impact.upper()}  {incident.name} [{components}]",
+        f"  posted {stamp(incident.posted)}, {end}  {incident.url}",
+        *(f"  {stamp(update.at, incident.posted)} {update.status}: {update.body}" for update in incident.updates),
+    ]
+
+
+def render(report: Report) -> str:
+    lines = [f"GitHub status now: {report.status}"]
+    if report.affected:
+        lines.append("Not operational: " + ", ".join(
+            f"{component.name} ({component.status.replace('_', ' ')})" for component in report.affected))
+    scope = f"open or resolved since {stamp(report.since)}" if report.since is not None else "open"
+    if not report.incidents:
+        return "\n".join([*lines, f"No incidents {scope}.", LATE_NOTE])
+    count = len(report.incidents)
+    lines.append(f"{count} incident{'s' if count > 1 else ''} {scope}:")
+    for incident in report.incidents:
+        lines += ["", *incident_lines(incident)]
+    return "\n".join(lines)
+
+
+def main() -> None:
+    doc = __doc__ or ""
+    parser = argparse.ArgumentParser(description=doc.split("\n\n", 1)[0], epilog=doc.split("\n\n", 2)[-1],
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--since", metavar="TIME",
+                        help="also list incidents resolved since TIME, such as 2026-11-04T17:22Z, 2026-11-04, or 6h")
+    parser.add_argument("--json", action="store_true", help="print JSON instead of text")
+    args = parser.parse_args()
+    now = datetime.now(timezone.utc)
+    try:
+        since = parse_time(args.since, now) if args.since is not None else None
+    except ValueError as error:
+        parser.error(f"--since: {error}")
+    if since is not None and since > now:
+        parser.error(f"--since: {args.since} is in the future")
+    try:
+        report = collect(since)
+    except StatusPageError as error:
+        parser.exit(3, f"gh-incidents: {error}\n")
+    if report.since is not None and report.feed_start is not None and report.since < report.feed_start:
+        print(f"gh-incidents: githubstatus.com lists incidents back to {stamp(report.feed_start)} only,"
+              " so older ones are missing", file=sys.stderr)
+    print(json.dumps(asdict(report), indent=2, default=utc) if args.json else render(report))
+    sys.exit(0 if report.clear else 1)
+
+
+if __name__ == "__main__":
+    main()

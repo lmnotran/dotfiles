@@ -45,6 +45,7 @@ agents, or edits a user's repo.
 | [`gh-run-timings`](test_run_timings.py) | Duration calculations, pagination, filters, sorting, skipped steps, and empty results. |
 | [`gh-queue-times`](test_queue_times.py) | Date-window run search, deduplication, job fetches, and caching. Rate-limit retries, queue-time stats, filters, output formats, and argument errors. |
 | [`gh-run-failures`](test_run_failures.py) | Error extraction, cleanup, deduplication, and failed-step links. Polling, run states, and exit codes. |
+| [`gh-incidents`](test_incidents.py) | Open incidents behind an all-operational status, `--since` overlap including retroactive incidents, and components. Time parsing, JSON output, feed warnings, and unreachable or unexpected answers. |
 | [`gh-artifact-file`](test_artifact_file.py) | Artifact selection, pagination, file reads, and citations. Missing artifacts, invalid options, and insufficient matches. |
 | [`proj-image-build`](test_proj_image_build.py) | Image discovery, parent order, tags, and build targets. Preview and builder commands. |
 | [`proj-ci-local`](test_proj_ci_local.py) | Image selection, Docker mounts, command quoting, and registry-cli config. Cleanup and invalid checkout errors. |
