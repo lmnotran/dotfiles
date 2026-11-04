@@ -41,8 +41,10 @@ Footer handling:
   standalone issue link P11 PR bodies carry at the bottom
   ("[P11F-XXXX](https://...)").
 - It is split off before any section math and re-attached afterwards, so
-  editing the *last* section preserves it. A replacement that
-  carries its own footer wins over the fetched one.
+  editing the *last* section preserves it. A whole-body replacement whose
+  footer has its own link-reference definitions wins over the fetched
+  footer. One that ends with only the standalone issue link keeps the
+  fetched definitions after it.
 
 PRs are looked up via `gh pr view <num> --json body`; edits go through
 `gh pr edit <num> -F <tmpfile>`. Every write is re-fetched and compared
@@ -132,6 +134,10 @@ _ISSUE_LINK_RE = re.compile(r"^\[[A-Z][A-Z0-9]*-\d+\]\(https?://\S+\)$")
 def is_footer_line(line):
     s = line.strip()
     return bool(_REF_DEF_RE.match(s) or _ISSUE_LINK_RE.match(s))
+
+
+def reference_definitions(footer):
+    return "\n".join(line for line in footer.splitlines() if _REF_DEF_RE.match(line.strip()))
 
 
 def split_footer(body):
@@ -293,9 +299,11 @@ def run(args):
     else:
         new_body = new_text
 
-    # A replacement carrying its own footer wins over the fetched one.
-    if split_footer(new_body)[1]:
-        footer = ""
+    # A replacement footer with its own reference definitions wins over the fetched one.
+    # One with only the standalone issue link keeps the fetched definitions after it.
+    new_footer = split_footer(new_body)[1]
+    if new_footer:
+        footer = "" if reference_definitions(new_footer) else reference_definitions(footer)
 
     final_body = join_footer(new_body, footer)
     if args.long:

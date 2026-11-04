@@ -61,6 +61,22 @@ def test_replacement_footer_wins_when_replacing_body(pr: ModuleType, monkeypatch
     push.assert_called_once_with(17, replacement + "\n")
 
 
+def test_fetched_reference_kept_when_replacement_ends_with_issue_link(pr: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Given: a whole P11 body ends with the standalone issue link, but the Jira integration's
+    # reference definition is only on GitHub.
+    replacement = "## Summary\nChanged\n\n[P11F-123](https://jira.invalid/browse/P11F-123)\n"
+    monkeypatch.setattr(sys, "argv", ["gh-pr-body", "17", "--edit-file", "-"])
+    monkeypatch.setattr(sys, "stdin", io.StringIO(replacement))
+    monkeypatch.setattr(pr, "fetch_body", Mock(return_value=BODY))
+    monkeypatch.setattr(pr, "fetch_diff_lines", Mock(return_value=10))
+    push = Mock()
+    monkeypatch.setattr(pr, "push_body", push)
+    # When
+    pr.main()
+    # Then
+    push.assert_called_once_with(17, "## Summary\nChanged\n\n" + FOOTER + "\n")
+
+
 def test_missing_section_when_requested(pr: ModuleType) -> None:
     # Given / When / Then
     with pytest.raises(SystemExit, match="section not found"):
