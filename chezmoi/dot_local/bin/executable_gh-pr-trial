@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""gh-pr-trial — run a PR workflow on a temporary commit, then revert the commit.
+
+Usage:
+    gh-pr-trial --workflow REGEX --revert-message MSG [--cancel REGEX ...]
+                [--wait SECONDS] [--keep] [--remote NAME] [-R OWNER/REPO]
+
+Some checks only run on a pull_request event when certain files change, and a
+workflow that isn't on the default branch can't be dispatched by hand. To test
+one, commit a temporary change that triggers it, like a comment in a file its
+paths filter watches, and make that commit HEAD. Then run this. It:
+
+1. Pushes HEAD to the current branch. It refuses when HEAD is already pushed or
+   the branch is the remote's default branch.
+2. Cancels the runs on that commit whose workflow name matches a --cancel
+   pattern, like the full Product pipeline the push starts too.
+3. Waits for the run whose workflow name matches --workflow and prints its jobs.
+4. Reverts HEAD with --revert-message and pushes the revert, unless --keep.
+
+It waits for the run to finish before reverting, because the revert's push can
+cancel a run still in progress. When the run doesn't show up or doesn't finish
+in time, it exits without reverting and prints the commands to finish by hand.
+
+Exit status: 0 when the run succeeded, 1 when it finished any other way, 2 when
+it didn't start or finish in time, 3 on an error before anything was pushed.
+
+Example:
+    git commit -am "CI_CD: Temporarily touch pyproject.toml to run the tool diff (P11F-9072)"
+    gh-pr-trial --workflow '^Firmware Tool Diff$' --cancel '^Product$' --cancel 'Devcontainer Smoke' \\
+        --revert-message "CI_CD: Drop the temporary pyproject.toml comment (P11F-9072)"
+"""
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+import time
+from typing import Any, Final
+
+POLL_SECONDS: Final = 20
+APPEAR_SECONDS: Final = 300  # how long to wait for the target run to show up after the push
+ACTIVE: Final = frozenset({"queued", "in_progress", "waiting", "requested", "pending"})
+
+
+class TrialError(Exception):
+    """A git or gh command failed, or the branch isn't safe to push a trial to."""
+
+
+def run(*command: str) -> str:
+    result = subprocess.run(list(command), capture_output=True, text=True, timeout=300, check=False)
+    if result.returncode != 0:
+        raise TrialError(result.stderr.strip() or f"`{' '.join(command)}` exited {result.returncode}")
+    return result.stdout.strip()
+
+
+def succeeds(*command: str) -> bool:
+    return subprocess.run(list(command), capture_output=True, timeout=300, check=False).returncode == 0
+
+
+def repo_args(repo: str | None) -> list[str]:
+    return ["-R", repo] if repo else []
+
+
+def check_branch(remote: str) -> tuple[str, str]:
+    """The current branch and HEAD's full SHA, after checking a trial push is safe."""
+    branch = run("git", "rev-parse", "--abbrev-ref", "HEAD")
+    if branch == "HEAD":
+        raise TrialError("HEAD is detached. Check out the PR's branch")
+    run("git", "fetch", "--quiet", remote, branch)
+    try:
+        default = run("git", "symbolic-ref", "--short", f"refs/remotes/{remote}/HEAD").removeprefix(f"{remote}/")
+    except TrialError:
+        default = ""  # the clone doesn't record the remote's default branch
+    if branch in {default, "main", "master"}:
+        raise TrialError(f"refusing to push a trial commit to {branch}")
+    head = run("git", "rev-parse", "HEAD")
+    if succeeds("git", "merge-base", "--is-ancestor", "HEAD", f"{remote}/{branch}"):
+        raise TrialError(f"HEAD {head[:10]} is already on {remote}/{branch}. Commit the temporary change first")
+    return branch, head
+
+
+def runs_for(sha: str, repo: str | None) -> list[dict[str, Any]]:
+    raw: list[dict[str, Any]] = json.loads(run("gh", "run", "list", *repo_args(repo), "--commit", sha, "--limit", "50",
+                                               "--json", "databaseId,workflowName,status,conclusion,url"))
+    return raw
+
+
+def cancel_matching(runs: list[dict[str, Any]], patterns: list[re.Pattern[str]], cancelled: set[int],
+                    repo: str | None) -> None:
+    for item in runs:
+        run_id = int(item["databaseId"])
+        if (run_id not in cancelled and item["status"] in ACTIVE
+                and any(pattern.search(item["workflowName"]) for pattern in patterns)):
+            run("gh", "run", "cancel", str(run_id), *repo_args(repo))
+            cancelled.add(run_id)
+            print(f"gh-pr-trial: cancelled {item['workflowName']} {item['url']}", file=sys.stderr)
+
+
+def wait_for_target(sha: str, workflow: re.Pattern[str], cancels: list[re.Pattern[str]], wait: int,
+                    repo: str | None) -> tuple[dict[str, Any] | None, set[int]]:
+    """The finished target run, or None when it didn't show up or finish in time, plus the cancelled run IDs."""
+    cancelled: set[int] = set()
+    start = time.monotonic()
+    while True:
+        runs = runs_for(sha, repo)
+        cancel_matching(runs, cancels, cancelled, repo)
+        targets = sorted((item for item in runs if workflow.search(item["workflowName"])),
+                         key=lambda item: int(item["databaseId"]))
+        elapsed = time.monotonic() - start
+        if targets and targets[-1]["status"] == "completed":
+            cancel_matching(runs_for(sha, repo), cancels, cancelled, repo)
+            return targets[-1], cancelled
+        if elapsed >= wait or (not targets and elapsed >= APPEAR_SECONDS):
+            return None, cancelled
+        time.sleep(POLL_SECONDS)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--workflow", required=True, help="regular expression for the workflow name to wait for")
+    parser.add_argument("--cancel", action="append", default=[], metavar="REGEX",
+                        help="cancel runs on the trial commit whose workflow name matches. Repeat for more")
+    parser.add_argument("--revert-message", help="commit message for the revert. Required unless --keep")
+    parser.add_argument("--wait", type=int, default=1800, help="seconds to wait for the run to finish (default: 1800)")
+    parser.add_argument("--keep", action="store_true", help="leave the trial commit in place instead of reverting it")
+    parser.add_argument("--remote", default="origin", help="git remote to push to (default: origin)")
+    parser.add_argument("-R", "--repo", help="OWNER/REPO for gh, else the current directory's repository")
+    args = parser.parse_args()
+    if not args.keep and not args.revert_message:
+        parser.error("--revert-message is required unless --keep")
+    try:
+        workflow = re.compile(args.workflow)
+        cancels = [re.compile(pattern) for pattern in args.cancel]
+        branch, head = check_branch(args.remote)
+        run("git", "push", "--quiet", args.remote, branch)
+    except (TrialError, re.error, subprocess.TimeoutExpired, OSError) as error:
+        parser.exit(3, f"gh-pr-trial: {error}\n")
+    print(f"gh-pr-trial: pushed {head[:10]} to {args.remote}/{branch}", file=sys.stderr)
+    revert_by_hand = (f"git revert --no-commit HEAD && git commit -m '<message>' && "
+                      f"git push {args.remote} {branch}")
+    try:
+        target, cancelled = wait_for_target(head, workflow, cancels, args.wait, args.repo)
+        if target is None:
+            print(f"gh-pr-trial: no finished run matching {args.workflow!r} on {head[:10]} in time. "
+                  f"The trial commit is still pushed. Check the run, then revert with: {revert_by_hand}", file=sys.stderr)
+            sys.exit(2)
+        jobs = json.loads(run("gh", "run", "view", str(target["databaseId"]), *repo_args(args.repo), "--json", "jobs"))
+        print(f"{target['workflowName']}: {target['conclusion']} {target['url']}")
+        for job in jobs["jobs"]:
+            print(f"  {job['name']}: {job['conclusion'] or job['status']} {job['url']}")
+        if cancelled:
+            print(f"cancelled: {', '.join(str(run_id) for run_id in sorted(cancelled))}")
+        if not args.keep:
+            run("git", "revert", "--no-commit", "HEAD")
+            run("git", "commit", "--quiet", "-m", args.revert_message)
+            run("git", "push", "--quiet", args.remote, branch)
+            print(f"reverted in {run('git', 'rev-parse', '--short=10', 'HEAD')}")
+    except (TrialError, subprocess.TimeoutExpired, OSError, json.JSONDecodeError, KeyError) as error:
+        parser.exit(2, f"gh-pr-trial: {error}\nThe trial commit may still be pushed. Revert with: {revert_by_hand}\n")
+    sys.exit(0 if target["conclusion"] == "success" else 1)
+
+
+if __name__ == "__main__":
+    main()
