@@ -41,6 +41,7 @@ agents, or edits a user's repo.
 | [`gh-pr-state`](test_pr_state.py) | Reviews, threads, checkboxes, checks, and branch protection. Unknown states and repo selection. |
 | [`gh-pr-trial`](test_pr_trial.py) | Push, cancel, wait, and revert order. Failed and unfinished runs, branch safety refusals, and repo selection. Real pushes aren't tested. |
 | [`prose-lint`](test_prose_lint.py) | Rule matches and allowed text. Baselines, word limits, Markdown, Atlassian Document Format (ADF), and CLI exit codes. |
+| [`mermaid-render`](test_mermaid_render.py) | Each layout and dark-mode rule, and a diagram in the house style that passes them all. Mermaid blocks in Markdown with file line numbers, Chrome lookup, the light and dark mmdc commands, and failed renders. Real renders aren't tested. |
 | [`gh-review-body`](test_review_body.py) | Review selection, pagination, payloads, stdin editing, and verified writes. |
 | [`gh-run-timings`](test_run_timings.py) | Duration calculations, pagination, filters, sorting, skipped steps, and empty results. |
 | [`gh-queue-times`](test_queue_times.py) | Date-window run search, deduplication, job fetches, and caching. Rate-limit retries, queue-time stats, filters, output formats, and argument errors. |
