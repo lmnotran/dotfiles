@@ -36,6 +36,7 @@ agents, or edits a user's repo.
 |---|---|
 | [`gh-pr-body`](test_pr_body.py) | Section boundaries and footer preservation. Verified writes, repo selection, prose checks, and word limits. |
 | [`gh-pr-create`](test_pr_create.py) | P11 title rules, prose checks, dry runs, and verified bodies. Jira links and API failures. |
+| [`gh-pr-grep`](test_pr_grep.py) | Diff parsing and line numbers, path prefilters, generated files, long lines, and sides. Failed diffs, JSON output, exit codes, and repo selection. |
 | [`gh-pr-merge`](test_pr_merge.py) | Merge blockers, reason comments, admin overrides, and dry runs. Checkbox parsing and follow-up notes. |
 | [`gh-pr-state`](test_pr_state.py) | Reviews, threads, checkboxes, checks, and branch protection. Unknown states and repo selection. |
 | [`prose-lint`](test_prose_lint.py) | Rule matches and allowed text. Baselines, word limits, Markdown, Atlassian Document Format (ADF), and CLI exit codes. |
