@@ -20,17 +20,33 @@ Flags:
     --json    raw issue JSON straight from /rest/api/3/issue/<KEY>
     --description-raw  emit description as raw ADF JSON (suitable for piping
                        to jira-put-description after edit)
+    --markdown  emit only the description, as Markdown that md2adf turns back
+                into the same document. Edit it, then send it with
+                `jira-put-description <KEY> <file> --markdown`. Tables keep
+                their rows. When the description has something Markdown can't
+                keep (a mention, a smart link, a panel, a line break inside a
+                paragraph), stderr names it: change those parts in the ADF.
 
 Auth via ~/.netrc (`machine cpl-legogroup.atlassian.net`); uses `curl -n`.
 """
 import argparse
+import importlib.util
 import json
+import re
 import subprocess
 import sys
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+from types import ModuleType
+from typing import Any, Final
 
 BASE = "https://cpl-legogroup.atlassian.net"
 DEFAULT_FIELDS = ["summary", "status", "type", "parent", "assignee",
                   "created", "updated", "links", "prs", "description"]
+MARKDOWN_MARKS: Final = frozenset({"code", "strong", "em", "link"})
+INLINE_TYPES: Final = frozenset({"text", "hardBreak", "mention", "emoji", "inlineCard", "status", "date"})
+CONTAINERS: Final = frozenset({"doc", "paragraph", "heading", "bulletList", "orderedList", "listItem", "codeBlock",
+                               "blockquote", "table", "tableRow", "tableHeader", "tableCell"})
 
 
 def curl_json(path):
@@ -115,6 +131,266 @@ def render_adf(doc):
     return "".join(parts).rstrip() + "\n"
 
 
+class MarkdownWriter:
+    """Writes ADF as the Markdown md2adf reads back into the same document.
+
+    `lost` names what the Markdown can't keep, in the order it was found.
+    """
+
+    def __init__(self) -> None:
+        self.lost: list[str] = []
+
+    def lose(self, what: str) -> None:
+        if what not in self.lost:
+            self.lost.append(what)
+
+    def document(self, doc: dict[str, Any]) -> str:
+        return "\n".join(self.blocks(doc.get("content") or [])) + "\n"
+
+    def blocks(self, nodes: list[dict[str, Any]]) -> list[str]:
+        lines: list[str] = []
+        for node in nodes:
+            rendered = self.block(node)
+            if rendered:
+                lines += ([""] if lines else []) + rendered
+        return lines
+
+    def block(self, node: dict[str, Any]) -> list[str]:
+        kind = node.get("type")
+        content = node.get("content") or []
+        if kind == "paragraph":
+            text = self.inline(content).strip()
+            if not text:
+                self.lose("empty paragraphs")
+                return []
+            return [guard_block_start(text)]
+        if kind == "heading":
+            text = self.inline(content).strip()
+            if trailing := re.search(r"\s(#+)\s*$", text):
+                text = text[:trailing.start(1)] + "\\" + text[trailing.start(1):]
+            return ["#" * int((node.get("attrs") or {}).get("level") or 1) + " " + text]
+        if kind in ("bulletList", "orderedList"):
+            return self.list_lines(node, 0)
+        if kind == "codeBlock":
+            return self.code_lines(node)
+        if kind == "rule":
+            return ["---"]
+        if kind == "blockquote":
+            return [f"> {line}" if line else ">" for line in self.blocks(content)]
+        if kind == "table":
+            return self.table_lines(node)
+        if kind in ("mediaSingle", "mediaGroup", "media"):
+            self.lose("images and attachments")
+            return []
+        self.lose(f"{kind} blocks")
+        if all(child.get("type") in INLINE_TYPES for child in content):
+            text = self.inline(content).strip()
+            return [guard_block_start(text)] if text else []
+        return self.blocks(content)
+
+    def list_lines(self, node: dict[str, Any], indent: int) -> list[str]:
+        ordered = node.get("type") == "orderedList"
+        number = int((node.get("attrs") or {}).get("order") or 1)
+        lines: list[str] = []
+        for item in node.get("content") or []:
+            marker = f"{number}." if ordered else "-"
+            number += 1
+            children = item.get("content") or []
+            text = ""
+            if children and children[0].get("type") == "paragraph":
+                text, children = self.inline(children[0].get("content") or []).strip(), children[1:]
+            elif children:
+                self.lose("list items that don't start with text")
+            first = len(lines)
+            lines.append(f"{' ' * indent}{marker} {text}")
+            for child in children:
+                if child.get("type") in ("bulletList", "orderedList"):
+                    lines += self.list_lines(child, indent + len(marker) + 1)
+                    continue
+                self.lose("list items with more than one paragraph or block")
+                extra = " ".join(line.strip() for line in self.block(child) if line.strip())
+                lines[first] = f"{lines[first]} {extra}".rstrip() if text else lines[first] + extra
+        return lines
+
+    def code_lines(self, node: dict[str, Any]) -> list[str]:
+        text = "".join(str(child.get("text", "")) for child in node.get("content") or [])
+        if "\t" in text:
+            self.lose("tabs in code blocks")
+        longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+        fence = "`" * max(3, longest + 1)
+        language = str((node.get("attrs") or {}).get("language") or "")
+        return [fence + language, *(text.split("\n") if text else []), fence]
+
+    def table_lines(self, node: dict[str, Any]) -> list[str]:
+        rows = node.get("content") or []
+        grid: list[list[str]] = []
+        for row in rows:
+            cells: list[str] = []
+            for cell in row.get("content") or []:
+                attrs = cell.get("attrs") or {}
+                if int(attrs.get("colspan") or 1) > 1 or int(attrs.get("rowspan") or 1) > 1:
+                    self.lose("merged table cells")
+                parts = []
+                for child in cell.get("content") or []:
+                    if child.get("type") != "paragraph":
+                        self.lose(f"{child.get('type')} blocks inside table cells")
+                    if part := self.inline(child.get("content") or [], in_table=True).strip():
+                        parts.append(part)
+                if len(cell.get("content") or []) > 1:
+                    self.lose("table cells with more than one paragraph")
+                cells.append(" ".join(parts))
+            grid.append(cells)
+        if not grid:
+            return []
+        if any(cell.get("type") != "tableHeader" for cell in rows[0].get("content") or []):
+            self.lose("tables whose first row isn't a header row")
+        width = max(len(row) for row in grid)
+        lines = ["| " + " | ".join(row + [""] * (width - len(row))) + " |" for row in grid]
+        lines.insert(1, "| " + " | ".join(["---"] * width) + " |")
+        return lines
+
+    def inline(self, nodes: list[dict[str, Any]], in_table: bool = False) -> str:
+        out: list[str] = []
+        for node in nodes:
+            kind = node.get("type")
+            attrs = node.get("attrs") or {}
+            if kind == "text":
+                out.append(self.text(node, in_table))
+            elif kind == "hardBreak":
+                self.lose("line breaks inside a paragraph")
+                out.append(" ")
+            elif kind == "mention":
+                self.lose("mentions")
+                out.append(escape_inline("@" + str(attrs.get("text", "?")).lstrip("@"), in_table))
+            elif kind == "inlineCard":
+                self.lose("smart links")
+                url = str(attrs.get("url", ""))
+                out.append(f"[{escape_inline(url, in_table)}]({url})")
+            elif kind == "emoji":
+                self.lose("emoji")
+                out.append(escape_inline(str(attrs.get("text") or attrs.get("shortName") or ""), in_table))
+            else:
+                self.lose(f"{kind} nodes")
+                out.append(self.inline(node.get("content") or [], in_table)
+                           or escape_inline(str(attrs.get("text", "")), in_table))
+        return "".join(out)
+
+    def text(self, node: dict[str, Any], in_table: bool) -> str:
+        value = str(node.get("text", ""))
+        if "\n" in value:
+            self.lose("line breaks inside a paragraph")
+            value = value.replace("\n", " ")
+        marks = node.get("marks") or []
+        types = {str(mark.get("type")) for mark in marks}
+        for other in sorted(types - MARKDOWN_MARKS):
+            self.lose(f"{other} formatting")
+        href = next((str((mark.get("attrs") or {}).get("href", "")) for mark in marks if mark.get("type") == "link"), None)
+        if "code" in types:
+            if types & {"strong", "em"}:
+                self.lose("bold or italic code")
+            if "`" in value:
+                self.lose("code that contains backticks")
+            ticks = "`" * (max((len(run) for run in re.findall(r"`+", value)), default=0) + 1)
+            body = f"{ticks}{value}{ticks}"
+        else:
+            core = value.strip()
+            if not core:
+                return value if href is None else f"[{value}]({href})"
+            lead, trail = value[:len(value) - len(value.lstrip())], value[len(value.rstrip()):]
+            body = escape_inline(core, in_table)
+            if "em" in types:
+                body = f"_{body}_" if "strong" in types else f"*{body}*"
+            body = lead + body + trail
+            if "strong" in types:
+                body = f"**{body}**"
+        if href is None:
+            return body
+        if "]" in value:
+            self.lose("link text that contains ]")
+        if re.search(r"\s", href) or not re.fullmatch(r"[^\s()]*(?:\([^\s()]*\)[^\s()]*)*", href):
+            self.lose("link URLs with spaces or unbalanced parentheses")
+        return f"[{body}]({href})"
+
+
+def escape_inline(text: str, in_table: bool = False) -> str:
+    """Backslash the characters md2adf would read as markup."""
+    text = re.sub(r"([\\`*\[])", r"\\\1", text)
+    text = re.sub(r"(?<!\w)_|_(?!\w)", r"\\_", text)
+    return text.replace("|", "\\|") if in_table else text
+
+
+def guard_block_start(text: str) -> str:
+    """Backslash a paragraph's opening when md2adf would read it as another kind of block."""
+    if ordered := re.match(r"\d+(?=\.[ \t])", text):
+        return text[:ordered.end()] + "\\" + text[ordered.end():]
+    if re.match(r"#{1,6}(?:[ \t]|$)|>|-[ \t]|---\s*$|~{3,}", text):
+        return "\\" + text
+    return text
+
+
+def load_md2adf() -> ModuleType | None:
+    """md2adf from this script's directory, for the round-trip check, or None when it isn't there."""
+    here = Path(__file__).resolve().parent
+    for name in ("md2adf", "executable_md2adf"):
+        path = here / name
+        if path.is_file():
+            loader = SourceFileLoader("jira_view_md2adf", str(path))
+            spec = importlib.util.spec_from_loader("jira_view_md2adf", loader)
+            if spec is None:
+                return None
+            module = importlib.util.module_from_spec(spec)
+            sys.modules["jira_view_md2adf"] = module
+            loader.exec_module(module)
+            return module
+    return None
+
+
+def normalize(node: Any) -> Any:
+    """ADF reduced to what md2adf can express, for comparing two documents."""
+    if not isinstance(node, dict):
+        return node
+    kind = node.get("type")
+    attrs = node.get("attrs") or {}
+    out: dict[str, Any] = {"type": kind}
+    if kind == "heading":
+        out["attrs"] = {"level": int(attrs.get("level") or 1)}
+    elif kind == "orderedList":
+        out["attrs"] = {"order": int(attrs.get("order") or 1)}
+    elif kind == "codeBlock" and attrs.get("language"):
+        out["attrs"] = {"language": attrs["language"]}
+    if kind == "text":
+        out["text"] = node.get("text", "")
+        marks = [{"type": mark.get("type"), **({"attrs": {"href": (mark.get("attrs") or {}).get("href")}}
+                                               if mark.get("type") == "link" else {})}
+                 for mark in node.get("marks") or []]
+        if marks:
+            out["marks"] = sorted(marks, key=lambda mark: str(mark["type"]))
+        return out
+    if kind in CONTAINERS or node.get("content"):
+        merged: list[dict[str, Any]] = []
+        for child in (normalize(child) for child in node.get("content") or []):
+            if child.get("type") == "text" and not child.get("text"):
+                continue
+            if merged and child.get("type") == "text" and merged[-1].get("type") == "text" \
+                    and child.get("marks") == merged[-1].get("marks"):
+                merged[-1] = {**merged[-1], "text": merged[-1]["text"] + child["text"]}
+            else:
+                merged.append(child)
+        out["content"] = merged
+    return out
+
+
+def markdown_description(doc: dict[str, Any]) -> tuple[str, list[str]]:
+    """The description as Markdown, and what md2adf wouldn't turn back into the same document."""
+    writer = MarkdownWriter()
+    text = writer.document(doc)
+    lost = list(writer.lost)
+    md2adf = load_md2adf()
+    if md2adf is not None and not lost and normalize(md2adf.convert(text)) != normalize(doc):
+        lost.append("formatting md2adf reads differently")
+    return text, lost
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__.split("\n\n", 1)[0],
@@ -122,9 +398,12 @@ def main():
     )
     ap.add_argument("key", help="Jira key, e.g. P11F-8060")
     ap.add_argument("--fields", help="Comma-separated subset of: " + ",".join(DEFAULT_FIELDS))
-    ap.add_argument("--json", action="store_true", help="Print raw issue JSON and exit")
-    ap.add_argument("--description-raw", action="store_true",
-                    help="Print description as raw ADF JSON (for piping to jira-put-description)")
+    raw = ap.add_mutually_exclusive_group()
+    raw.add_argument("--json", action="store_true", help="Print raw issue JSON and exit")
+    raw.add_argument("--description-raw", action="store_true",
+                     help="Print description as raw ADF JSON (for piping to jira-put-description)")
+    raw.add_argument("--markdown", action="store_true",
+                     help="Print only the description, as Markdown that md2adf turns back into the same document")
     args = ap.parse_args()
 
     issue = curl_json(f"/rest/api/3/issue/{args.key}")
@@ -139,6 +418,18 @@ def main():
     if args.description_raw:
         json.dump(issue["fields"].get("description"), sys.stdout, indent=2)
         sys.stdout.write("\n")
+        return
+
+    if args.markdown:
+        description = issue["fields"].get("description")
+        if not description:
+            print(f"jira-view: {args.key} has no description", file=sys.stderr)
+            return
+        text, lost = markdown_description(description)
+        sys.stdout.write(text)
+        if lost:
+            print(f"jira-view: this Markdown can't keep {', '.join(lost)}. Sending it back as-is changes or drops "
+                  "them. Change those parts in the ADF from --description-raw instead.", file=sys.stderr)
         return
 
     fields_to_show = args.fields.split(",") if args.fields else DEFAULT_FIELDS
