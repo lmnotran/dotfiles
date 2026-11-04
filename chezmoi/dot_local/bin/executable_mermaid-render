@@ -1,0 +1,342 @@
+#!/usr/bin/env python3
+"""mermaid-render — render mermaid diagrams light and dark, and flag GitHub layout traps.
+
+Takes a .mmd file that holds one diagram, or Markdown whose ```mermaid blocks
+each hold one, like a PR body or a doc. Each diagram renders twice with
+mermaid-cli (mmdc): light on white, and dark on GitHub's dark background. Each
+PNG prints as "<file>:<line>: <png>", so you can look at both before
+publishing.
+
+Rules, checked before rendering:
+    no-direction     a subgraph without its own `direction` line. Mermaid can
+                     lay it out opposite to its parent, so a top-to-bottom job
+                     can get left-to-right steps.
+    subgraph-link    a link to or from a subgraph, like `Before ~~~ After`.
+                     Mermaid re-points it to a node inside, and every subgraph
+                     around that node ignores its `direction`. Put Before and
+                     After in separate diagrams instead.
+    hyphen-wrap      a node label line where GitHub can split a hyphenated
+                     word. GitHub wraps node text at about 15 characters, so
+                     start the word on its own line with <br/>, or shorten it.
+    light-fill-text  a light `fill:` in a style or classDef without `color:`.
+                     Dark mode draws light text on it.
+    faint-arrows     a subgraph with a light fill and no `linkStyle default`.
+                     Dark mode's light grey arrows vanish over it.
+
+mmdc runs through npx with an installed Chrome, since its own download is often
+missing: $MERMAID_RENDER_CHROME, else the newest chrome-headless-shell in
+~/.cache/puppeteer or ~/.cache/ms-playwright, else Chrome or Chromium on PATH.
+GitHub still wraps text more tightly than mmdc, so check the page after
+publishing.
+
+Findings print as "<file>:<line>: <rule>: <message>". Exit status is 0 when
+clean, 1 with findings, and 2 on unreadable input, no diagram, or a failed
+render.
+
+Examples:
+    mermaid-render diagram.mmd
+    mermaid-render --lint-only body.md
+    gh-pr-body 6428 --section "## Changes" | mermaid-render -
+"""
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Final
+
+GITHUB_WRAP_CHARS: Final = 15
+LIGHT_LUMINANCE: Final = 0.5
+RENDER_TIMEOUT_SECONDS: Final = 180
+THEMES: Final = (("light", ("-b", "white")), ("dark", ("-t", "dark", "-b", "#0d1117")))
+CHROME_GLOBS: Final = (
+    ".cache/puppeteer/chrome-headless-shell/*/chrome-headless-shell-*/chrome-headless-shell",
+    ".cache/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-*/chrome-headless-shell",
+    ".cache/puppeteer/chrome/*/chrome-*/chrome",
+)
+CHROME_COMMANDS: Final = ("chromium", "chromium-browser", "google-chrome", "google-chrome-stable")
+MAC_CHROME: Final = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+
+_OPEN_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})\s*mermaid\s*$")
+_ANY_FENCE_RE = re.compile(r"^ {0,3}(?:`{3,}|~{3,})", re.MULTILINE)
+_SUBGRAPH_RE = re.compile(r'^\s*subgraph\b\s*(?:([^\s\["]+)|"([^"]*)")?')
+_DIRECTION_RE = re.compile(r"^\s*direction\s+\w+\s*$")
+_END_RE = re.compile(r"^\s*end\s*$")
+_STATEMENT_RE = re.compile(r"^\s*(?:%%|(?:style|classDef|class|linkStyle|click|subgraph|direction|end)\b)")
+_LINK_RE = re.compile(r"--|==|~~~|-\.|\.-")
+_QUOTED_RE = re.compile(r'"[^"]*"')
+_BRACKETED_RE = re.compile(r"\[[^\[\]]*\]|\([^()]*\)|\{[^{}]*\}|\|[^|]*\||:::\w+")
+_LABEL_RE = re.compile(r'\w\s*(?:\[\[|\[\(|\(\[|\(\(|\{\{|[\[({>])\s*(?:"([^"]*)"|([^"\[\](){}|]+))')
+_BREAK_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
+_HYPHENATED_RE = re.compile(r"[\w.]+(?:-[\w.]+)+")
+_STYLE_RE = re.compile(r"^\s*(style|classDef)\s+(\S+)\s+(\S.*)$")
+_CLASS_RE = re.compile(r"^\s*class\s+(\S+)\s+(\w+)\s*;?\s*$")
+_FILL_RE = re.compile(r"(?:^|,)\s*fill\s*:\s*#((?:[0-9a-fA-F]{3}){1,2}|[0-9a-fA-F]{8})\s*(?:,|;|$)")
+_COLOR_RE = re.compile(r"(?:^|,)\s*color\s*:")
+_LINK_STYLE_DEFAULT_RE = re.compile(r"^\s*linkStyle\s+default\b")
+
+Lines = list[tuple[int, str]]
+
+
+@dataclass(frozen=True, slots=True)
+class Diagram:
+    """One diagram's source and the file line its first line sits on."""
+
+    source: str
+    first_line: int
+
+
+@dataclass(frozen=True, slots=True)
+class Finding:
+    line: int
+    rule: str
+    message: str
+
+
+class RenderError(Exception):
+    """mmdc failed, timed out, or couldn't start."""
+
+
+def diagrams(text: str) -> list[Diagram]:
+    """Each closed ```mermaid block in Markdown text."""
+    lines = text.splitlines()
+    found: list[Diagram] = []
+    fence: str | None = None
+    start = 0
+    for index, line in enumerate(lines):
+        if fence is None:
+            opening = _OPEN_FENCE_RE.match(line)
+            if opening:
+                fence, start = opening.group(1), index + 1
+        elif re.fullmatch(rf" {{0,3}}{re.escape(fence[0])}{{{len(fence)},}}\s*", line):
+            found.append(Diagram("\n".join(lines[start:index]) + "\n", start + 1))
+            fence = None
+    return found
+
+
+def lint(diagram: Diagram) -> list[Finding]:
+    """Findings for one diagram, numbered by line in its file."""
+    lines = list(enumerate(diagram.source.splitlines(), start=diagram.first_line))
+    subgraphs = {match.group(1) for _, line in lines if (match := _SUBGRAPH_RE.match(line)) and match.group(1)}
+    findings = _direction_findings(lines) + _link_findings(lines, subgraphs)
+    findings += _label_findings(lines) + _fill_findings(lines, subgraphs)
+    return sorted(findings, key=lambda finding: finding.line)
+
+
+def _direction_findings(lines: Lines) -> list[Finding]:
+    open_subgraphs: list[tuple[int, str]] = []
+    directed: set[tuple[int, str]] = set()
+    findings = []
+    for number, line in lines:
+        subgraph = _SUBGRAPH_RE.match(line)
+        if subgraph:
+            open_subgraphs.append((number, subgraph.group(1) or subgraph.group(2) or "(untitled)"))
+        elif _DIRECTION_RE.match(line) and open_subgraphs:
+            directed.add(open_subgraphs[-1])
+        elif _END_RE.match(line) and open_subgraphs:
+            closed = open_subgraphs.pop()
+            if closed not in directed:
+                findings.append(Finding(closed[0], "no-direction",
+                                        f"subgraph {closed[1]} sets no direction, so mermaid can lay it out "
+                                        "opposite to its parent"))
+    return findings
+
+
+def _link_findings(lines: Lines, subgraphs: set[str]) -> list[Finding]:
+    findings = []
+    for number, line in lines:
+        if _STATEMENT_RE.match(line):
+            continue
+        bare = _QUOTED_RE.sub(" ", line)
+        while (stripped := _BRACKETED_RE.sub(" ", bare)) != bare:
+            bare = stripped
+        if not _LINK_RE.search(bare):
+            continue
+        for name in sorted(set(re.findall(r"\w+", bare)) & subgraphs):
+            findings.append(Finding(number, "subgraph-link",
+                                    f"links subgraph {name}. Mermaid re-points the link to a node inside it, "
+                                    "and the subgraphs around that node ignore their direction"))
+    return findings
+
+
+def _label_findings(lines: Lines) -> list[Finding]:
+    findings = []
+    for number, line in lines:
+        if _STATEMENT_RE.match(line):
+            continue
+        for label in _LABEL_RE.finditer(line):
+            for part in _BREAK_RE.split(label.group(1) or label.group(2) or ""):
+                text = part.strip()
+                for word in _HYPHENATED_RE.finditer(text):
+                    if len(word.group()) > GITHUB_WRAP_CHARS:
+                        advice = "Shorten it, or pick the break yourself with <br/>"
+                    elif word.start() > 0 and len(text) > GITHUB_WRAP_CHARS:
+                        advice = "Start it on its own line"
+                    else:
+                        continue
+                    findings.append(Finding(number, "hyphen-wrap",
+                                            f'"{text}": GitHub may split {word.group()} at the hyphen. {advice}'))
+    return findings
+
+
+def _fill_findings(lines: Lines, subgraphs: set[str]) -> list[Finding]:
+    findings = []
+    light_classes: set[str] = set()
+    light_targets: dict[str, int] = {}  # node or subgraph ID -> line that gave it a light fill
+    for number, line in lines:
+        style = _STYLE_RE.match(line)
+        if style is None or not _is_light(style.group(3)):
+            continue
+        if not _COLOR_RE.search(style.group(3)):
+            findings.append(Finding(number, "light-fill-text",
+                                    f"{style.group(2)} has a light fill and no color:, so dark mode draws "
+                                    "light text on it"))
+        names = style.group(2).split(",")
+        if style.group(1) == "classDef":
+            light_classes.update(names)
+        else:
+            light_targets.update(dict.fromkeys(names, number))
+    for number, line in lines:
+        assignment = _CLASS_RE.match(line)
+        if assignment and assignment.group(2) in light_classes:
+            light_targets.update(dict.fromkeys(assignment.group(1).split(","), number))
+    light_subgraphs = sorted((number, name) for name, number in light_targets.items() if name in subgraphs)
+    if light_subgraphs and not any(_LINK_STYLE_DEFAULT_RE.match(line) for _, line in lines):
+        number, name = light_subgraphs[0]
+        findings.append(Finding(number, "faint-arrows",
+                                f"subgraph {name} has a light fill. Add `linkStyle default stroke:#777` "
+                                "so dark mode's arrows show over it"))
+    return findings
+
+
+def _is_light(props: str) -> bool:
+    """Whether a style's hex fill is light enough that dark mode's light text won't show on it."""
+    fill = _FILL_RE.search(props)
+    if fill is None:
+        return False
+    digits = fill.group(1)
+    rgb = "".join(digit * 2 for digit in digits) if len(digits) == 3 else digits[:6]
+    channels = [int(rgb[index:index + 2], 16) / 255 for index in (0, 2, 4)]
+    red, green, blue = (c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in channels)
+    return 0.2126 * red + 0.7152 * green + 0.0722 * blue > LIGHT_LUMINANCE
+
+
+def find_chrome() -> Path | None:
+    """$MERMAID_RENDER_CHROME, else the newest Chrome a browser cache holds, else one on PATH."""
+    configured = os.environ.get("MERMAID_RENDER_CHROME")
+    if configured:
+        return Path(configured)
+    for pattern in CHROME_GLOBS:
+        installed = sorted(Path.home().glob(pattern), key=_version_key)
+        if installed:
+            return installed[-1]
+    for command in CHROME_COMMANDS:
+        found = shutil.which(command)
+        if found:
+            return Path(found)
+    return MAC_CHROME if MAC_CHROME.exists() else None
+
+
+def _version_key(path: Path) -> tuple[int, ...]:
+    """(153, 0, 8010, 36) for .../linux-153.0.8010.36/chrome-headless-shell-linux64/chrome-headless-shell."""
+    return tuple(int(part) for part in re.findall(r"\d+", path.parents[1].name))
+
+
+@dataclass(frozen=True, slots=True)
+class Renderer:
+    """Runs mmdc with one puppeteer config and scale."""
+
+    config: Path
+    scale: int
+
+    def render(self, source: Path) -> list[Path]:
+        """The light and dark PNGs for `source`, written next to it."""
+        outputs = []
+        for theme, flags in THEMES:
+            output = source.with_name(f"{source.stem}-{theme}.png")
+            command = ["npx", "-y", "-p", "@mermaid-js/mermaid-cli", "mmdc", "-p", str(self.config),
+                       "-i", str(source), "-o", str(output), "-s", str(self.scale), *flags]
+            try:
+                result = subprocess.run(command, capture_output=True, text=True, check=False,
+                                        timeout=RENDER_TIMEOUT_SECONDS)
+            except FileNotFoundError as error:
+                raise RenderError("npx isn't on PATH. Install Node.js to render") from error
+            except subprocess.TimeoutExpired as error:
+                raise RenderError(f"{source.name} ({theme}) took over {RENDER_TIMEOUT_SECONDS}s") from error
+            if result.returncode:
+                lines = (result.stderr or result.stdout).strip().splitlines()
+                first = next((index for index, line in enumerate(lines) if "rror" in line), max(len(lines) - 1, 0))
+                detail = [line for line in lines[first:first + 6] if not line.lstrip().startswith("at ")]
+                raise RenderError(f"{source.name} ({theme}) failed:\n" + ("\n".join(detail) or "no output"))
+            outputs.append(output)
+        return outputs
+
+
+def _read(path: str) -> str:
+    if path == "-":
+        return sys.stdin.read()
+    return Path(path).read_text(encoding="utf-8")
+
+
+def _file_diagrams(path: str, text: str) -> list[Diagram]:
+    """A Markdown file's ```mermaid blocks, or the whole text when it's a bare diagram."""
+    blocks = diagrams(text)
+    markdown = path.endswith((".md", ".markdown")) or bool(_ANY_FENCE_RE.search(text))
+    return blocks if blocks or markdown or not text.strip() else [Diagram(text, 1)]
+
+
+def main(argv: list[str] | None = None) -> int:
+    doc = __doc__ or ""
+    ap = argparse.ArgumentParser(prog="mermaid-render", description=doc.split("\n\n", 1)[0],
+                                 epilog=doc.split("\n\n", 1)[1], formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("files", nargs="+", metavar="FILE", help="a .mmd file, Markdown with ```mermaid blocks, or '-' for stdin")
+    ap.add_argument("-o", "--out", type=Path, metavar="DIR", help="where to write the PNGs (default: a new temporary directory)")
+    ap.add_argument("-s", "--scale", type=int, default=1, metavar="N", help="mmdc scale factor (default: 1)")
+    ap.add_argument("--lint-only", action="store_true", help="check the rules without rendering")
+    args = ap.parse_args(argv)
+    try:
+        jobs = [("<stdin>" if path == "-" else path, diagram)
+                for path in args.files for diagram in _file_diagrams(path, _read(path))]
+    except OSError as error:
+        print(f"mermaid-render: {error}", file=sys.stderr)
+        return 2
+    if not jobs:
+        print("mermaid-render: no mermaid diagram found", file=sys.stderr)
+        return 2
+    findings = [(label, finding) for label, diagram in jobs for finding in lint(diagram)]
+    for label, finding in findings:
+        print(f"{label}:{finding.line}: {finding.rule}: {finding.message}")
+    status = 1 if findings else 0
+    if args.lint_only:
+        return status
+    chrome = find_chrome()
+    if chrome is None:
+        print("mermaid-render: no Chrome found. Run `npx -y puppeteer browsers install chrome-headless-shell`, "
+              "or set MERMAID_RENDER_CHROME", file=sys.stderr)
+        return 2
+    out: Path = args.out or Path(tempfile.mkdtemp(prefix="mermaid-render-"))
+    out.mkdir(parents=True, exist_ok=True)
+    # Chrome's sandbox can't start where unprivileged user namespaces are blocked (Ubuntu 23.10+ AppArmor).
+    sandbox_args = ["--no-sandbox", "--disable-setuid-sandbox"] if sys.platform == "linux" else []
+    config = out / "puppeteer.json"
+    config.write_text(json.dumps({"executablePath": str(chrome), "args": sandbox_args}))
+    renderer = Renderer(config, args.scale)
+    try:
+        for number, (label, diagram) in enumerate(jobs, start=1):
+            source = out / f"{'stdin' if label == '<stdin>' else Path(label).stem}-{number}.mmd"
+            source.write_text(diagram.source)
+            for png in renderer.render(source):
+                print(f"{label}:{diagram.first_line}: {png}")
+    except RenderError as error:
+        print(f"mermaid-render: {error}", file=sys.stderr)
+        return 2
+    return status
+
+
+if __name__ == "__main__":
+    sys.exit(main())
