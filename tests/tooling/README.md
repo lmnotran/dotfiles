@@ -54,7 +54,7 @@ agents, or edits a user's repo.
 | [`jira-search`](test_jira_search.py) | Query encoding, pagination, result limits, output formats, and API failures. |
 | [`jira-view`](test_jira_view.py) | ADF rendering, missing descriptions, raw output, and API errors. |
 | [`claude-context-nudge`](test_context_nudge.py) | Token totals, warning levels, saved state, invalid data, and disabled mode. Prompt wording isn't tested. |
-| [`gh-step-anchor`](test_step_anchor.py) | Log matching, physical line numbers, skipped steps, and timestamps. Archive fallbacks and invalid or ambiguous logs. |
+| [`gh-step-anchor`](test_step_anchor.py) | Log matching, physical line numbers, skipped steps, and timestamps. Archive fallbacks and invalid or ambiguous logs. Job lookup by name, text output, and retries on transient errors. |
 | [`sandbox`](test_sandbox.py) | Real CLI help, unknown commands, and errors outside a repo. |
 | [`oc-session-purge`](test_session_purge.py) | Session selection, ID validation, dry runs, file removal, and database failures. |
 | [`chamberctl`](test_chamberctl.py) | Real CLI help and unknown commands. Systemd calls aren't tested. |

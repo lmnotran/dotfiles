@@ -427,3 +427,126 @@ def test_cli_hint_when_pattern_only_matches_a_step_header(anchor: ModuleType, mo
     # Then
     assert error.value.code == 1
     assert "--include-header" in capsys.readouterr().err
+
+
+RUN_JOBS: Final = "repos/owner/repo/actions/runs/42/jobs?filter=latest&per_page=100&page={page}"
+
+
+def serve_run_jobs(anchor: ModuleType, monkeypatch: pytest.MonkeyPatch, logs: Mock, pages: list[list[dict[str, object]]]) -> Mock:
+    served = logs.side_effect
+    responses = {RUN_JOBS.format(page=number): json.dumps({"jobs": jobs}).encode() for number, jobs in enumerate(pages, 1)}
+
+    def gh(endpoint: str) -> bytes:
+        return responses[endpoint] if endpoint in responses else served(endpoint)
+
+    api = Mock(side_effect=gh)
+    monkeypatch.setattr(anchor, "gh", api)
+    return api
+
+
+@pytest.mark.parametrize("run", ["42", "https://github.com/owner/repo/actions/runs/42", "https://github.com/owner/repo/actions/runs/42/attempts/2"])
+def test_run_finds_the_job_by_name(anchor: ModuleType, logs: Mock, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], run: str) -> None:
+    # Given
+    serve_run_jobs(anchor, monkeypatch, logs, [[{"id": 16, "name": "Build / unit / unittest-ctest"},
+                                                {"id": 17, "name": "Build / unit / unittest-ci-scripts"}]])
+    repo = ["--repo", "owner/repo"] if run.isdecimal() else []
+    monkeypatch.setattr(sys, "argv", ["gh-step-anchor", "--run", run, *repo, "ci-scripts", "TARGET"])
+    # When
+    anchor.main()
+    # Then
+    assert capsys.readouterr().out == URL + "#step:1:2\n"
+
+
+def test_run_reads_every_page_of_jobs(anchor: ModuleType, logs: Mock, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    # Given
+    first = [{"id": 1000 + number, "name": f"shard {number}"} for number in range(100)]
+    api = serve_run_jobs(anchor, monkeypatch, logs, [first, [{"id": 17, "name": "Build / unit / unittest-ci-scripts"}]])
+    monkeypatch.setattr(sys, "argv", ["gh-step-anchor", "--run", "42", "--repo", "owner/repo", "ci-scripts$", "TARGET"])
+    # When
+    anchor.main()
+    # Then
+    assert capsys.readouterr().out == URL + "#step:1:2\n"
+    assert RUN_JOBS.format(page=2) in [call.args[0] for call in api.call_args_list]
+
+
+@pytest.mark.parametrize(("name", "message"), [
+    ("unittest", "2 jobs in run 42 match 'unittest', narrow the pattern: Build / unit / unittest-ctest; Build / unit / unittest-ci-scripts"),
+    ("lint", "no job in run 42 matches 'lint'"),
+])
+def test_run_refuses_when_the_name_is_ambiguous_or_missing(anchor: ModuleType, logs: Mock, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], name: str, message: str) -> None:
+    # Given
+    serve_run_jobs(anchor, monkeypatch, logs, [[{"id": 16, "name": "Build / unit / unittest-ctest"},
+                                                {"id": 17, "name": "Build / unit / unittest-ci-scripts"}]])
+    monkeypatch.setattr(sys, "argv", ["gh-step-anchor", "--run", "42", "--repo", "owner/repo", name, "TARGET"])
+    # When
+    with pytest.raises(SystemExit) as error:
+        anchor.main()
+    # Then
+    assert error.value.code == 1
+    assert message in capsys.readouterr().err
+
+
+def test_run_target_when_repo_conflicts_with_the_url(anchor: ModuleType) -> None:
+    # When / Then
+    with pytest.raises(anchor.AnchorError, match="conflicts"):
+        anchor.run_target("https://github.com/owner/repo/actions/runs/42", "other/repo")
+
+
+def test_text_prints_each_url_with_its_line(anchor: ModuleType, logs: Mock, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    # Given
+    monkeypatch.setattr(sys, "argv", ["gh-step-anchor", URL, "TARGET", "--all", "--text"])
+    # When
+    anchor.main()
+    # Then
+    assert capsys.readouterr().out.splitlines() == [
+        URL + "#step:1:2  TARGET setup", URL + "#step:3:3  TARGET build",
+        URL + "#step:3:6  TARGET continuation", URL + "#step:7:2  TARGET post",
+    ]
+
+
+def test_text_drops_the_timestamp(anchor: ModuleType) -> None:
+    # When / Then
+    assert anchor.shown_text("2026-01-01T00:00:00.1234567Z 43 passed") == "43 passed"
+    assert anchor.shown_text("no timestamp") == "no timestamp"
+
+
+STREAM_ERROR: Final = b"stream error: stream ID 1; CANCEL; received from peer\n"
+
+
+def test_gh_retries_a_transient_error(anchor: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    # Given
+    run = Mock(side_effect=[subprocess.CompletedProcess([], 1, b"", STREAM_ERROR), subprocess.CompletedProcess([], 0, b"payload", b"")])
+    sleep = Mock()
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(anchor.time, "sleep", sleep)
+    # When
+    payload = anchor.gh("repos/owner/repo/x")
+    # Then
+    assert payload == b"payload"
+    assert run.call_count == 2
+    assert sleep.call_args_list == [((2.0,),)]
+    assert "retrying in 2s after: stream error" in capsys.readouterr().err
+
+
+def test_gh_gives_up_after_the_retries(anchor: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Given
+    run = Mock(return_value=subprocess.CompletedProcess([], 1, b"", b"gh: Bad Gateway (HTTP 502)\n"))
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(anchor.time, "sleep", Mock())
+    # When / Then
+    with pytest.raises(anchor.ApiError, match="HTTP 502"):
+        anchor.gh("repos/owner/repo/x")
+    assert run.call_count == 3
+
+
+def test_gh_does_not_retry_a_missing_archive(anchor: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Given
+    run = Mock(return_value=subprocess.CompletedProcess([], 1, b"", b"gh: Not Found (HTTP 404)\n"))
+    sleep = Mock()
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(anchor.time, "sleep", sleep)
+    # When / Then
+    with pytest.raises(anchor.ApiError, match="HTTP 404"):
+        anchor.gh("repos/owner/repo/x")
+    assert run.call_count == 1
+    sleep.assert_not_called()
