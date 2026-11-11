@@ -46,6 +46,16 @@ def test_last_section_edit_when_footer_exists(pr: ModuleType, monkeypatch: pytes
     assert sent.count("## Test plan") == 1
 
 
+@pytest.mark.parametrize("replacement", ["New\n", "New\n\n\n", "## A\n\nNew\n"])
+def test_blank_line_before_next_heading_when_replacing_middle_section(pr: ModuleType, replacement: str) -> None:
+    # Given
+    body = "## A\n\nOld\n\n## B\n\nKept"
+    # When
+    new_body = pr.replace_section(body, "## A", replacement)
+    # Then
+    assert new_body == "## A\n\nNew\n\n## B\n\nKept\n"
+
+
 def test_replacement_footer_wins_when_replacing_body(pr: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
     # Given
     replacement = "## Summary\nChanged\n\n[ABC-999]: https://jira.invalid/new"

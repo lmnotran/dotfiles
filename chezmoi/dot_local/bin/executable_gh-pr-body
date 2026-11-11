@@ -32,7 +32,8 @@ Section semantics:
   or shallower depth, or the start of the trailing footer, or EOF.
 - On replace, the new content overwrites the section *contents* but the
   heading line itself is preserved (unless the replacement begins with a
-  heading line, in which case it's used as-is).
+  heading line, in which case it's used as-is). One blank line separates the
+  new content from the next heading.
 
 Footer handling:
 - The footer is the trailing run of blank lines, markdown link-reference
@@ -204,7 +205,14 @@ def replace_section(body, heading, new_content):
         # Keep the blank line that separates a heading from its content.
         pad = [] if (new_lines and not new_lines[0].strip()) else [""]
         replacement = [lines[start]] + pad + new_lines
-    out = lines[:start] + replacement + lines[end:]
+    rest = lines[end:]
+    if rest:
+        # The replaced lines included the blank line before the next heading.
+        # Put exactly one back.
+        while replacement and not replacement[-1].strip():
+            replacement.pop()
+        replacement.append("")
+    out = lines[:start] + replacement + rest
     return "\n".join(out).rstrip() + "\n"
 
 
