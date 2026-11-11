@@ -5,6 +5,11 @@
 .omo
 {{- end }}
 
+{{- /* The Alfred Jira workflow searches the work Jira from the work Mac. */ -}}
+{{- if or (ne .chezmoi.os "darwin") (not (hasPrefix "usmastra" .chezmoi.username)) }}
+Library
+{{- end }}
+
 {{- /* The OpenChamber systemd user service and chamberctl only run on Linux. */ -}}
 {{- if eq .chezmoi.os "darwin" }}
 .config/systemd
