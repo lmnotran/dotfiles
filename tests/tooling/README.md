@@ -56,7 +56,7 @@ agents, or edits a user's repo.
 | [`jira-comment`](test_jira_comment.py) | Create and edit payloads, comment IDs, prose checks, dry runs, and API failures. |
 | [`jira-create`](test_jira_create.py) | Defaults, overrides, prose checks, dry runs, and response validation. |
 | [`jira-search`](test_jira_search.py) | Query encoding, pagination, result limits, output formats, and API failures. |
-| [`alfred-jira`](test_alfred_jira.py) | JQL for no query, issue keys, and text. Alfred items, direct key links, and search failures. |
+| [`alfred-jira`](test_alfred_jira.py) | JQL for no query, issue keys, bare numbers, and text. Alfred items, direct key links, and search failures. |
 | [`jira-view`](test_jira_view.py) | ADF rendering, missing descriptions, raw output, and API errors. Markdown output that round-trips through md2adf, panels included, and the parts it names as lost. |
 | [`claude-context-nudge`](test_context_nudge.py) | Token totals, warning levels, saved state, invalid data, and disabled mode. Prompt wording isn't tested. |
 | [`gh-step-anchor`](test_step_anchor.py) | Log matching, physical line numbers, skipped steps, and timestamps. Archive fallbacks and invalid or ambiguous logs. Job lookup by name, text output, and retries on transient errors. |
