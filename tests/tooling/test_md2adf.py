@@ -70,6 +70,28 @@ def test_table_when_header_separator_and_empty_cells(md: ModuleType) -> None:
     assert second["content"][1]["content"] == [{"type": "paragraph", "content": []}]
 
 
+@pytest.mark.parametrize(("alert", "panel"), [
+    ("NOTE", "info"), ("TIP", "success"), ("IMPORTANT", "note"), ("WARNING", "warning"), ("CAUTION", "error"),
+    ("important", "note"),
+])
+def test_panel_when_quote_opens_with_github_alert(md: ModuleType, alert: str, panel: str) -> None:
+    # Given / When
+    doc = md.convert(f"> [!{alert}]\n> **Headline.** Rest\n>\n> - item")
+    # Then
+    assert doc["content"] == [{"type": "panel", "attrs": {"panelType": panel}, "content": [
+        md.paragraph("**Headline.** Rest"),
+        {"type": "bulletList", "content": [{"type": "listItem", "content": [md.paragraph("item")]}]},
+    ]}]
+
+
+@pytest.mark.parametrize("markdown", ["> [!NOTE] same line", "> [!UNKNOWN]\n> text", "> text\n> [!NOTE]"])
+def test_blockquote_when_alert_marker_is_not_alone_on_first_line(md: ModuleType, markdown: str) -> None:
+    # Given / When
+    doc = md.convert(markdown)
+    # Then
+    assert doc["content"][0]["type"] == "blockquote"
+
+
 def test_rule_and_quote_when_blocks(md: ModuleType) -> None:
     # Given / When
     doc = md.convert("---\n> # Quoted\n> soft\n> wrapped\n>\n> - item")

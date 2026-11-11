@@ -5,7 +5,9 @@ Usage:
     md2adf <file.md|->
 
 Supports ATX headings, paragraphs, nested bullet/ordered lists, fenced code,
-inline code, bold, italic, links, GFM tables, rules and blockquotes.
+inline code, bold, italic, links, GFM tables, rules and blockquotes. A GitHub
+alert (a quote that opens with `[!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`
+or `[!CAUTION]` on its own line) becomes a Jira panel of the same color.
 Unrecognized syntax remains paragraph text. Prints ADF JSON to stdout.
 """
 import argparse
@@ -21,6 +23,7 @@ class Attributes(TypedDict, total=False):
     language: str
     href: str
     order: int
+    panelType: str
 
 
 class Mark(TypedDict):
@@ -44,6 +47,8 @@ INLINE: Final = re.compile(
 ITEM: Final = re.compile(r"^( *)([-*]|\d+\.)[ \t]+(.*)$")
 HEADING: Final = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*)|$)")
 FENCE: Final = re.compile(r"^ {0,3}(`{3,}|~{3,})([^`~]*)$")
+ALERT: Final = re.compile(r"\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]", re.IGNORECASE)
+PANEL_TYPES: Final = {"NOTE": "info", "TIP": "success", "IMPORTANT": "note", "WARNING": "warning", "CAUTION": "error"}
 
 
 def inline(text: str, marks: tuple[Mark, ...] = ()) -> list[Node]:
@@ -168,7 +173,12 @@ def blocks(lines: list[str]) -> list[Node]:
             while index < len(lines) and lines[index].lstrip().startswith(">"):
                 quoted.append(re.sub(r"^\s*> ?", "", lines[index]))
                 index += 1
-            nodes.append({"type": "blockquote", "content": blocks(quoted)})
+            alert = ALERT.fullmatch(quoted[0].strip())
+            if alert:
+                nodes.append({"type": "panel", "attrs": {"panelType": PANEL_TYPES[alert[1].upper()]},
+                              "content": blocks(quoted[1:])})
+            else:
+                nodes.append({"type": "blockquote", "content": blocks(quoted)})
         elif ITEM.fullmatch(line):
             node, index = list_block(lines, index)
             nodes.append(node)

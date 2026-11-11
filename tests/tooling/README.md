@@ -51,12 +51,12 @@ agents, or edits a user's repo.
 | [`proj-image-build`](test_proj_image_build.py) | Image discovery, parent order, tags, and build targets. Preview and builder commands. |
 | [`proj-ci-local`](test_proj_ci_local.py) | Image selection, Docker mounts, command quoting, and registry-cli config. Cleanup and invalid checkout errors. |
 | [`ci-sample`](test_ci_sample.py) | Branch safety, cleanup previews, summaries, timing calculations, and workflow selection. |
-| [`md2adf`](test_md2adf.py) | Markdown conversion, nested lists, formatting, tables, and links. File and stdin input. |
+| [`md2adf`](test_md2adf.py) | Markdown conversion, nested lists, formatting, tables, links, and GitHub alerts as panels. File and stdin input. |
 | [`jira-put-description`](test_jira_description.py) | Input validation, prose checks, dry runs, payloads, and API failures. |
 | [`jira-comment`](test_jira_comment.py) | Create and edit payloads, comment IDs, prose checks, dry runs, and API failures. |
 | [`jira-create`](test_jira_create.py) | Defaults, overrides, prose checks, dry runs, and response validation. |
 | [`jira-search`](test_jira_search.py) | Query encoding, pagination, result limits, output formats, and API failures. |
-| [`jira-view`](test_jira_view.py) | ADF rendering, missing descriptions, raw output, and API errors. Markdown output that round-trips through md2adf, and the parts it names as lost. |
+| [`jira-view`](test_jira_view.py) | ADF rendering, missing descriptions, raw output, and API errors. Markdown output that round-trips through md2adf, panels included, and the parts it names as lost. |
 | [`claude-context-nudge`](test_context_nudge.py) | Token totals, warning levels, saved state, invalid data, and disabled mode. Prompt wording isn't tested. |
 | [`gh-step-anchor`](test_step_anchor.py) | Log matching, physical line numbers, skipped steps, and timestamps. Archive fallbacks and invalid or ambiguous logs. Job lookup by name, text output, and retries on transient errors. |
 | [`sandbox`](test_sandbox.py) | Real CLI help, unknown commands, and errors outside a repo. |
