@@ -10,4 +10,12 @@ Host github*
     User git
     IdentitiesOnly yes
     HostName github.com
+{{- if eq .chezmoi.os "darwin" }}
+
+# GUI apps like OpenChamber can't reach the shell's ssh-agent, so read key
+# passphrases from Keychain (saved with `ssh-add --apple-use-keychain`).
+Host *
+    UseKeychain yes
+    AddKeysToAgent yes
+{{- end }}
 
