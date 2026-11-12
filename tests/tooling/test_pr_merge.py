@@ -148,12 +148,44 @@ def test_adds_the_pr_to_the_merge_queue_when_the_base_has_one(merge: ModuleType,
     assert "merge queue for main at position 2" in capsys.readouterr().out
 
 
-def test_stops_when_the_pr_is_already_in_the_merge_queue(merge: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_an_already_queued_pr_succeeds_without_queueing_again(merge: ModuleType, monkeypatch: pytest.MonkeyPatch,
+                                                               capsys: pytest.CaptureFixture[str]) -> None:
     # Given
-    run = stub(merge, monkeypatch, queue=(True, True))
+    run = stub(merge, monkeypatch, queue=(True, True), body="## Test plan\n\n- [ ] CI passes\n")
     # When / Then
-    assert merge.main(["17", "--reason", "Ship it."]) == 1
+    assert merge.main(["17"]) == 0
     run.assert_not_called()
+    assert "Already in the merge queue for main" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(("final_state", "expected"), [("MERGED", 0), ("OPEN", 1), ("CLOSED", 1)])
+def test_wait_blocks_until_the_queue_merges_or_drops_the_pr(merge: ModuleType, monkeypatch: pytest.MonkeyPatch,
+                                                            final_state: str, expected: int) -> None:
+    # Given: queued when run starts and on two polls, then merged, closed, or open but out of the queue
+    stub(merge, monkeypatch, queue=(True, True))
+    queued_pr = merge.fetch_pr.return_value
+    final_pr = merge.PullRequest(**{**{f: getattr(queued_pr, f) for f in queued_pr.__slots__}, "state": final_state})
+    merge.fetch_pr.side_effect = [queued_pr, queued_pr, queued_pr, final_pr]
+    merge.merge_queue.side_effect = [merge.MergeQueue(True, True)] * 3 + [merge.MergeQueue(True, False)]
+    sleep = Mock()
+    monkeypatch.setattr(merge.time, "sleep", sleep)
+    # When / Then
+    assert merge.main(["17", "--wait"]) == expected
+    assert sleep.call_count == 2
+
+
+def test_wait_after_enqueueing_reports_the_merge(merge: ModuleType, monkeypatch: pytest.MonkeyPatch,
+                                                 capsys: pytest.CaptureFixture[str]) -> None:
+    # Given
+    stub(merge, monkeypatch, queue=(True, False),
+         stdout='{"data": {"enqueuePullRequest": {"mergeQueueEntry": {"position": 1}}}}')
+    open_pr = merge.fetch_pr.return_value
+    merged_pr = merge.PullRequest(**{**{f: getattr(open_pr, f) for f in open_pr.__slots__}, "state": "MERGED"})
+    merge.fetch_pr.side_effect = [open_pr, merged_pr]
+    monkeypatch.setattr(merge.time, "sleep", Mock())
+    # When / Then
+    assert merge.main(["17", "--wait"]) == 0
+    assert "Merged PR #17." in capsys.readouterr().out
 
 
 def test_admin_override_merges_directly_instead_of_queueing(merge: ModuleType,

@@ -7,6 +7,7 @@ Usage:
     gh-pr-merge <num> --reason "<why>"     # merge with items open, and say why on the PR
     gh-pr-merge <num> --merge | --rebase   # instead of a squash merge
     gh-pr-merge <num> -R OWNER/REPO        # outside a checkout (or pass the PR URL)
+    gh-pr-merge <num> --wait               # with a merge queue, block until it merges
 
 Open items:
 - a required status check that failed, was cancelled, or hasn't finished
@@ -16,7 +17,9 @@ Open items:
 - an unchecked box in the PR body
 
 When the base branch has a merge queue, it adds the PR to the queue instead,
-and the queue picks the merge method. A PR that's already queued stops it.
+and the queue picks the merge method. A PR that's already queued needs nothing
+more, so it says so and exits 0. With --wait it then blocks until the queue
+merges the PR (exit 0) or drops it (exit 1).
 
 A draft, a closed PR, or merge conflicts stop it every time. Any other open
 item stops it unless you pass --reason. Then it posts a PR comment that lists
@@ -50,6 +53,7 @@ _QUEUE_QUERY: Final = """query($id: ID!, $branch: String!) {
 _ENQUEUE_MUTATION: Final = """mutation($id: ID!) {
   enqueuePullRequest(input: {pullRequestId: $id}) { mergeQueueEntry { position } }
 }"""
+_POLL_SECONDS: Final = 15
 _CHECK_GAPS: Final = {"fail": "failed", "cancel": "was cancelled", "pending": "hasn't finished"}
 _REVIEW_GAPS: Final = {"REVIEW_REQUIRED": "it needs an approving review",
                        "CHANGES_REQUESTED": "a reviewer requested changes"}
@@ -136,10 +140,8 @@ def unchecked_items(markdown: str) -> list[tuple[str, str]]:
     return items
 
 
-def assess(pr: PullRequest, checks: list[tuple[str, str]], queue: MergeQueue) -> Gaps:
+def assess(pr: PullRequest, checks: list[tuple[str, str]]) -> Gaps:
     stops = [] if pr.state == "OPEN" else [f"the PR is {pr.state.lower()}"]
-    if queue.queued:
-        stops.append("it's already in the merge queue")
     if pr.is_draft:
         stops.append(f"it's a draft. Mark it ready with `gh pr ready {pr.number}`")
     if pr.mergeable == "CONFLICTING":
@@ -165,6 +167,34 @@ def open_follow_ups(title: str) -> tuple[Path, list[str]] | None:
     return path, [item for section, item in unchecked_items(path.read_text()) if section.lower() == "follow-ups"]
 
 
+def wait_for_queue(ref: int | str) -> bool:
+    """Poll a queued PR until it merges (True) or leaves the queue unmerged (False)."""
+    while True:
+        pr = fetch_pr(ref)
+        if pr.state != "OPEN":
+            return pr.state == "MERGED"
+        if not merge_queue(pr).queued:
+            return False
+        time.sleep(_POLL_SECONDS)
+
+
+def finish(pr: PullRequest, ref: int | str, queued: bool, wait: bool) -> int:
+    """Wait for a queued PR when asked, then print the ticket's open follow-ups."""
+    if queued and wait:
+        print("Waiting for the merge queue...", flush=True)
+        if not wait_for_queue(ref):
+            print(f"gh-pr-merge: PR #{pr.number} left the merge queue without merging. "
+                  "Check the queue's CI run.", file=sys.stderr)
+            return 1
+        print(f"Merged PR #{pr.number}.")
+        queued = False
+    follow_ups = open_follow_ups(pr.title)
+    if follow_ups and follow_ups[1]:
+        print(f"Open follow-ups in {follow_ups[0]}" + (", for after it merges:" if queued else ":"))
+        print("\n".join(f"- [ ] {item}" for item in follow_ups[1]))
+    return 0
+
+
 def run(args: argparse.Namespace) -> int:
     pr = fetch_pr(args.num)
     for _ in range(3):
@@ -174,9 +204,12 @@ def run(args: argparse.Namespace) -> int:
         pr = fetch_pr(args.num)
     is_open = pr.state == "OPEN"
     queue = merge_queue(pr) if is_open else MergeQueue(enabled=False, queued=False)
-    gaps = assess(pr, required_checks(args.num) if is_open else [], queue)
-    open_items = [*gaps.stops, *gaps.protection, *gaps.boxes]
     print(f"PR #{pr.number}: {pr.title}")
+    if queue.queued:
+        print(f"Already in the merge queue for {pr.base}. It merges when the queue's checks pass.", flush=True)
+        return 0 if args.dry_run else finish(pr, args.num, queued=True, wait=args.wait)
+    gaps = assess(pr, required_checks(args.num) if is_open else [])
+    open_items = [*gaps.stops, *gaps.protection, *gaps.boxes]
     print("\n".join(["Open:", *(f"- {item}" for item in open_items)]) if open_items else "Nothing open.", flush=True)
     if gaps.stops or (open_items and not args.reason):
         hint = "" if gaps.stops else ' Pass --reason "<why>" to merge anyway.'
@@ -199,12 +232,9 @@ def run(args: argparse.Namespace) -> int:
                             env={**os.environ, "GH_PROMPT_DISABLED": "1"})
     if enqueue:
         position = json.loads(result.stdout)["data"]["enqueuePullRequest"]["mergeQueueEntry"]["position"]
-        print(f"Added to the merge queue for {pr.base} at position {position}. It merges when the queue's checks pass.")
-    follow_ups = open_follow_ups(pr.title)
-    if follow_ups and follow_ups[1]:
-        print(f"Open follow-ups in {follow_ups[0]}" + (", for after it merges:" if enqueue else ":"))
-        print("\n".join(f"- [ ] {item}" for item in follow_ups[1]))
-    return 0
+        print(f"Added to the merge queue for {pr.base} at position {position}. "
+              "It merges when the queue's checks pass.", flush=True)
+    return finish(pr, args.num, queued=enqueue, wait=args.wait)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -218,6 +248,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("-R", "--repo", metavar="OWNER/REPO", help="Repository for a PR number; needed outside a checkout")
     ap.add_argument("--reason", help="Merge with items open, and post this reason on the PR first")
     ap.add_argument("--dry-run", action="store_true", help="List what's open and what would run, without merging")
+    ap.add_argument("--wait", action="store_true",
+                    help="With a merge queue, block until the queue merges the PR (exit 0) or drops it (exit 1)")
     methods = ap.add_mutually_exclusive_group()
     for method in ("squash", "merge", "rebase"):
         methods.add_argument(f"--{method}", dest="method", action="store_const", const=method,
