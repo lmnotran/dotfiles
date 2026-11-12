@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+"""alfred-jira — Jira issues as Alfred Script Filter results.
+
+Usage:
+    alfred-jira [QUERY]
+
+No query lists your unresolved issues, most recently updated first.
+An issue key such as ABC-123 leads with a direct link to that issue.
+A bare number such as 123 is a key in JIRA_DEFAULT_PROJECT, when that's set.
+Any other text searches summaries and issue text.
+
+Prints Alfred Script Filter JSON. Each item opens the issue in the browser,
+and the item's copy text (Cmd+C) is the issue key.
+Runs jira-search, which authenticates with ~/.netrc.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import os
+import re
+import subprocess
+from pathlib import Path
+from typing import Final
+
+
+def jira_config(name: str, default: str = "") -> str:
+    """A setting from the environment, else from ~/.config/jira/env (KEY=value lines)."""
+    if os.environ.get(name):
+        return os.environ[name]
+    path = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "jira" / "env"
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return default
+    for line in lines:
+        key, sep, value = line.strip().partition("=")
+        if sep and key.strip() == name:
+            return value.strip().strip("\"'")
+    return default
+
+
+BASE: Final = jira_config("JIRA_BASE_URL").rstrip("/")
+FIELDS: Final = "summary,status,issuetype,assignee"
+MAX_RESULTS: Final = 20
+MINE: Final = "assignee = currentUser() AND resolution = Unresolved ORDER BY updated DESC"
+KEY_RE: Final = re.compile(r"^[A-Za-z][A-Za-z0-9_]+-\d+$")
+NUMBER_RE: Final = re.compile(r"^\d+$")
+
+
+def expand_key(query: str) -> str:
+    """Turn a bare issue number into a key in the default project."""
+    project = jira_config("JIRA_DEFAULT_PROJECT")
+    if project and NUMBER_RE.match(query):
+        return f"{project}-{query}"
+    return query
+
+
+def jql_string(text: str) -> str:
+    """Quote text as a JQL string literal."""
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def build_jql(query: str) -> str:
+    if not query:
+        return MINE
+    if KEY_RE.match(query):
+        return f"key = {query.upper()}"
+    # Jira's text search drops reserved characters, so a trailing wildcard on the
+    # summary match gives prefix matches while the user is still typing.
+    words = re.sub(r'[+\-&|!(){}\[\]^~*?\\:"/]', " ", query).split()
+    if not words:
+        return MINE
+    phrase = " ".join(words)
+    return f"(summary ~ {jql_string(phrase + '*')} OR text ~ {jql_string(phrase)}) ORDER BY updated DESC"
+
+
+def browse_url(key: str) -> str:
+    return f"{BASE}/browse/{key}"
+
+
+def issue_item(issue: dict) -> dict:
+    key = issue.get("key", "")
+    fields = issue.get("fields") or {}
+    summary = " ".join(str(fields.get("summary") or "").split())
+    issuetype = (fields.get("issuetype") or {}).get("name", "")
+    status = (fields.get("status") or {}).get("name", "")
+    assignee = (fields.get("assignee") or {}).get("displayName") or "Unassigned"
+    url = browse_url(key)
+    return {
+        "uid": key,
+        "title": f"{key}  {summary}",
+        "subtitle": " · ".join(part for part in (issuetype, status, assignee) if part),
+        "arg": url,
+        "autocomplete": key,
+        "quicklookurl": url,
+        "text": {"copy": key, "largetype": f"{key}  {summary}"},
+        "mods": {"cmd": {"arg": key, "subtitle": f"Copy {key}"}},
+    }
+
+
+def direct_item(key: str) -> dict:
+    url = browse_url(key)
+    return {
+        "uid": f"open-{key}",
+        "title": f"Open {key}",
+        "subtitle": url,
+        "arg": url,
+        "quicklookurl": url,
+        "text": {"copy": key},
+        "mods": {"cmd": {"arg": key, "subtitle": f"Copy {key}"}},
+    }
+
+
+def message_item(title: str, subtitle: str = "") -> dict:
+    return {"title": title, "subtitle": subtitle, "valid": False}
+
+
+def search(jql: str) -> list[dict]:
+    jira_search = os.path.join(os.path.dirname(os.path.realpath(__file__)), "jira-search")
+    out = subprocess.run([jira_search, jql, "--json", "--fields", FIELDS, "--max", str(MAX_RESULTS)],
+                         capture_output=True, text=True, timeout=30)
+    if out.returncode:
+        lines = (out.stderr or out.stdout).strip().splitlines()
+        raise RuntimeError(lines[0] if lines else f"jira-search exited {out.returncode}")
+    issues = json.loads(out.stdout or "[]")
+    if not isinstance(issues, list):
+        raise RuntimeError("jira-search returned no issues array")
+    return issues
+
+
+def results(query: str) -> list[dict]:
+    if not BASE:
+        return [message_item("Jira isn't set up", "Set JIRA_BASE_URL in ~/.config/jira/env")]
+    query = expand_key(query.strip())
+    key = query.upper() if KEY_RE.match(query) else ""
+    items: list[dict] = []
+    try:
+        items = [issue_item(issue) for issue in search(build_jql(query))]
+    except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired) as err:
+        if not key:
+            return [message_item("Jira search failed", str(err))]
+    if key and not any(item["uid"] == key for item in items):
+        # Jira rejects a search for a key it can't see, so offer the link anyway.
+        items.insert(0, direct_item(key))
+    if not items:
+        return [message_item("No Jira issues found", query or "No unresolved issues assigned to you")]
+    return items
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("query", nargs="*", help="Issue key or search text")
+    args = ap.parse_args()
+    print(json.dumps({"items": results(" ".join(args.query))}))
+
+
+if __name__ == "__main__":
+    main()

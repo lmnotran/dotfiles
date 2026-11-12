@@ -49,6 +49,12 @@ agents, or edits a user's repo.
 | [`gh-artifact-file`](test_artifact_file.py) | Artifact selection, pagination, file reads, and citations. Missing artifacts, invalid options, and insufficient matches. |
 | [`ci-sample`](test_ci_sample.py) | Branch safety, cleanup previews, summaries, timing calculations, and workflow selection. |
 | [`md2adf`](test_md2adf.py) | Markdown conversion, nested lists, formatting, tables, links, and GitHub alerts as panels. File and stdin input. |
+| [`alfred-jira`](test_alfred_jira.py) | JQL for no query, issue keys, bare numbers, and text. Alfred items, direct key links, search failures, the config file, and a missing site. |
+| [`jira-put-description`](test_jira_description.py) | Input validation, prose checks, dry runs, payloads, and API failures. |
+| [`jira-comment`](test_jira_comment.py) | Create and edit payloads, comment IDs, prose checks, dry runs, and API failures. |
+| [`jira-create`](test_jira_create.py) | Defaults from config, overrides, missing settings, prose checks, dry runs, and response validation. |
+| [`jira-search`](test_jira_search.py) | Query encoding, pagination, result limits, output formats, API failures, and a missing site. |
+| [`jira-view`](test_jira_view.py) | ADF rendering, missing descriptions, raw output, and API errors. Markdown output that round-trips through md2adf, panels included, and the parts it names as lost. |
 | [`claude-context-nudge`](test_context_nudge.py) | Token totals, warning levels, saved state, invalid data, and disabled mode. Prompt wording isn't tested. |
 | [`gh-step-anchor`](test_step_anchor.py) | Log matching, physical line numbers, skipped steps, and timestamps. Archive fallbacks and invalid or ambiguous logs. Job lookup by name, text output, and retries on transient errors. |
 | [`sandbox`](test_sandbox.py) | Real CLI help, unknown commands, and errors outside a repo. |
@@ -58,6 +64,7 @@ agents, or edits a user's repo.
 The linked test files list the individual cases.
 
 Work-only helpers and their tests live in the private `lmnotran/work-dotfiles`.
+The tests give the Jira helpers placeholder settings (`example.atlassian.net`, `ABC`).
 
 ## Deliberate gaps
 

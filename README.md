@@ -103,8 +103,12 @@ Work configuration is selected when the username starts with `usmastra` or
 Anything that names the employer, its services or internal hosts lives in a
 private repo, `lmnotran/work-dotfiles`. On work machines, `chezmoi apply`
 clones it to `~/repos/work-dotfiles` and runs its `install`, which links its
-helpers into `~/.local/bin`. The work Git email and `script/setup-keys` values
-come from it too.
+helpers into `~/.local/bin`. The work Git email, the `script/setup-keys`
+values and `~/.config/jira/env` come from it too.
+
+The `jira-*` helpers and `alfred-jira` read `JIRA_BASE_URL`,
+`JIRA_DEFAULT_PROJECT` and `JIRA_ACCOUNT_ID` from the environment or from
+`~/.config/jira/env` (`KEY=value` lines). They authenticate with `~/.netrc`.
 
 [`script/check-public`](script/check-public) keeps work-only words out of this
 repo. It reads a deny list from the private repo, or from the
