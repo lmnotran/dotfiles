@@ -1,3 +1,4 @@
+import json
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -23,12 +24,14 @@ def merge(tool: Callable[[str], ModuleType]) -> ModuleType:
 
 
 def stub(merge: ModuleType, monkeypatch: pytest.MonkeyPatch, checks: tuple | list = (("Build", "pass"),),
-         **changes: object) -> Mock:
+         queue: tuple[bool, bool] = (False, False), stdout: str = "", **changes: object) -> Mock:
     fields = {"number": 17, "title": TITLE, "body": "## Test plan\n\n- [x] Done\n", "state": "OPEN",
-              "is_draft": False, "mergeable": "MERGEABLE", "merge_state": "CLEAN", "review_decision": "APPROVED"}
+              "is_draft": False, "mergeable": "MERGEABLE", "merge_state": "CLEAN", "review_decision": "APPROVED",
+              "node_id": "PR_kwDO17", "base": "main"}
     monkeypatch.setattr(merge, "fetch_pr", Mock(return_value=merge.PullRequest(**{**fields, **changes})))
     monkeypatch.setattr(merge, "required_checks", Mock(return_value=list(checks)))
-    run = Mock(return_value=subprocess.CompletedProcess([], 0))
+    monkeypatch.setattr(merge, "merge_queue", Mock(return_value=merge.MergeQueue(*queue)))
+    run = Mock(return_value=subprocess.CompletedProcess([], 0, stdout=stdout))
     monkeypatch.setattr(subprocess, "run", run)
     return run
 
@@ -128,3 +131,55 @@ def test_required_checks_read_json_whatever_the_exit_code(merge: ModuleType, mon
                                                           result: subprocess.CompletedProcess, expected: list) -> None:
     monkeypatch.setattr(subprocess, "run", Mock(return_value=result))
     assert merge.required_checks(17) == expected
+
+
+def test_adds_the_pr_to_the_merge_queue_when_the_base_has_one(merge: ModuleType, monkeypatch: pytest.MonkeyPatch,
+                                                              capsys: pytest.CaptureFixture[str]) -> None:
+    # Given
+    run = stub(merge, monkeypatch, queue=(True, False),
+               stdout='{"data": {"enqueuePullRequest": {"mergeQueueEntry": {"position": 2}}}}')
+    # When
+    status = merge.main(["17"])
+    # Then
+    (call,) = run.call_args_list
+    assert status == 0
+    assert call.args[0][:3] == ["gh", "api", "graphql"]
+    assert "enqueuePullRequest" in call.args[0][4] and call.args[0][-1] == "id=PR_kwDO17"
+    assert "merge queue for main at position 2" in capsys.readouterr().out
+
+
+def test_stops_when_the_pr_is_already_in_the_merge_queue(merge: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Given
+    run = stub(merge, monkeypatch, queue=(True, True))
+    # When / Then
+    assert merge.main(["17", "--reason", "Ship it."]) == 1
+    run.assert_not_called()
+
+
+def test_admin_override_merges_directly_instead_of_queueing(merge: ModuleType,
+                                                            monkeypatch: pytest.MonkeyPatch) -> None:
+    # Given
+    run = stub(merge, monkeypatch, queue=(True, False), review_decision="REVIEW_REQUIRED")
+    # When
+    status = merge.main(["17", "--reason", "Approved in Teams."])
+    # Then
+    assert status == 0
+    assert run.call_args_list[-1].args[0] == ["gh", "pr", "merge", "17", "--squash", "--admin"]
+
+
+@pytest.mark.parametrize(("node", "expected"), [
+    ({"isInMergeQueue": False, "repository": {"mergeQueue": {"id": "MQ_1"}}}, (True, False)),
+    ({"isInMergeQueue": True, "repository": {"mergeQueue": {"id": "MQ_1"}}}, (True, True)),
+    ({"isInMergeQueue": False, "repository": {"mergeQueue": None}}, (False, False)),
+])
+def test_merge_queue_reads_the_graphql_answer(merge: ModuleType, monkeypatch: pytest.MonkeyPatch, node: dict,
+                                              expected: tuple[bool, bool]) -> None:
+    # Given
+    pr = merge.PullRequest(17, TITLE, "", "OPEN", False, "MERGEABLE", "CLEAN", "APPROVED", "PR_kwDO17", "main")
+    check_output = Mock(return_value=json.dumps({"data": {"node": node}}))
+    monkeypatch.setattr(subprocess, "check_output", check_output)
+    # When
+    queue = merge.merge_queue(pr)
+    # Then
+    assert (queue.enabled, queue.queued) == expected
+    assert check_output.call_args.args[0][-3:] == ["id=PR_kwDO17", "-f", "branch=main"]
