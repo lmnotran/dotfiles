@@ -158,20 +158,27 @@ def test_an_already_queued_pr_succeeds_without_queueing_again(merge: ModuleType,
     assert "Already in the merge queue for main" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize(("final_state", "expected"), [("MERGED", 0), ("OPEN", 1), ("CLOSED", 1)])
+@pytest.mark.parametrize(("polls", "expected"), [
+    # (state, queued) per poll after the PR is found queued
+    ([("OPEN", True), ("MERGED", False)], 0),
+    ([("OPEN", True), ("CLOSED", False)], 1),
+    # The queue lets go of a merging PR a moment before it reads as merged.
+    ([("OPEN", False), ("MERGED", False)], 0),
+    ([("OPEN", False), ("OPEN", True), ("OPEN", False), ("MERGED", False)], 0),
+    ([("OPEN", True), ("OPEN", False), ("OPEN", False)], 1),
+])
 def test_wait_blocks_until_the_queue_merges_or_drops_the_pr(merge: ModuleType, monkeypatch: pytest.MonkeyPatch,
-                                                            final_state: str, expected: int) -> None:
-    # Given: queued when run starts and on two polls, then merged, closed, or open but out of the queue
+                                                            polls: list[tuple[str, bool]], expected: int) -> None:
+    # Given
     stub(merge, monkeypatch, queue=(True, True))
     queued_pr = merge.fetch_pr.return_value
-    final_pr = merge.PullRequest(**{**{f: getattr(queued_pr, f) for f in queued_pr.__slots__}, "state": final_state})
-    merge.fetch_pr.side_effect = [queued_pr, queued_pr, queued_pr, final_pr]
-    merge.merge_queue.side_effect = [merge.MergeQueue(True, True)] * 3 + [merge.MergeQueue(True, False)]
-    sleep = Mock()
-    monkeypatch.setattr(merge.time, "sleep", sleep)
+    fields = {f: getattr(queued_pr, f) for f in queued_pr.__slots__}
+    merge.fetch_pr.side_effect = [queued_pr] + [merge.PullRequest(**{**fields, "state": s}) for s, _ in polls]
+    merge.merge_queue.side_effect = [merge.MergeQueue(True, True)] + [
+        merge.MergeQueue(True, queued) for state, queued in polls if state == "OPEN"]
+    monkeypatch.setattr(merge.time, "sleep", Mock())
     # When / Then
     assert merge.main(["17", "--wait"]) == expected
-    assert sleep.call_count == 2
 
 
 def test_wait_after_enqueueing_reports_the_merge(merge: ModuleType, monkeypatch: pytest.MonkeyPatch,

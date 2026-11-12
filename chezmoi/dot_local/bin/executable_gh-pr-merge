@@ -169,11 +169,15 @@ def open_follow_ups(title: str) -> tuple[Path, list[str]] | None:
 
 def wait_for_queue(ref: int | str) -> bool:
     """Poll a queued PR until it merges (True) or leaves the queue unmerged (False)."""
+    out_of_queue = 0
     while True:
         pr = fetch_pr(ref)
         if pr.state != "OPEN":
             return pr.state == "MERGED"
-        if not merge_queue(pr).queued:
+        # The queue removes a PR a moment before GitHub marks it merged, so one
+        # open-but-unqueued answer isn't proof that it was dropped.
+        out_of_queue = 0 if merge_queue(pr).queued else out_of_queue + 1
+        if out_of_queue == 2:
             return False
         time.sleep(_POLL_SECONDS)
 
