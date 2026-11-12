@@ -550,3 +550,102 @@ def test_gh_does_not_retry_a_missing_archive(anchor: ModuleType, monkeypatch: py
         anchor.gh("repos/owner/repo/x")
     assert run.call_count == 1
     sleep.assert_not_called()
+
+
+def test_show_prints_the_line_each_link_lands_on(anchor: ModuleType, logs: Mock, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    # Given
+    monkeypatch.setattr(sys, "argv", ["gh-step-anchor", "--show", URL + "#step:1:2", URL + "?check_suite_focus=true#step:3:6"])
+    # When
+    anchor.main()
+    # Then
+    assert capsys.readouterr().out.splitlines() == [
+        URL + "#step:1:2  TARGET setup", URL + "?check_suite_focus=true#step:3:6  TARGET continuation",
+    ]
+    assert logs.call_count == 3
+
+
+def test_show_round_trips_every_link_the_search_finds(anchor: ModuleType, logs: Mock, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    # Given
+    monkeypatch.setattr(sys, "argv", ["gh-step-anchor", URL, "TARGET", "--all", "--json"])
+    anchor.main()
+    found = json.loads(capsys.readouterr().out)
+    monkeypatch.setattr(sys, "argv", ["gh-step-anchor", "--json", "--show", *[match["url"] for match in found]])
+    # When
+    anchor.main()
+    # Then
+    assert json.loads(capsys.readouterr().out) == found
+
+
+def test_show_when_the_archive_has_no_step_files(anchor: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    # Given
+    serve_job_log(anchor, monkeypatch, JOB_LOG, STEP_TIMES)
+    monkeypatch.setattr(sys, "argv", ["gh-step-anchor", "--show", URL + "#step:3:3"])
+    # When
+    anchor.main()
+    # Then
+    assert capsys.readouterr().out == URL + "#step:3:3  TARGET build\n"
+
+
+def test_show_drops_the_timestamp_and_ansi_codes(anchor: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    # Given
+    serve_step(anchor, monkeypatch, "##[group]Run pytest\n2026-01-01T00:00:00Z \x1b[32m43 passed\x1b[0m, \x1b[33m262 deselected\x1b[0m\n")
+    monkeypatch.setattr(sys, "argv", ["gh-step-anchor", "--show", URL + "#step:1:2"])
+    # When
+    anchor.main()
+    # Then
+    assert capsys.readouterr().out == URL + "#step:1:2  43 passed, 262 deselected\n"
+
+
+def test_show_reports_each_link_it_cannot_resolve_and_goes_on(anchor: ModuleType, logs: Mock, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    # Given: step 2 is in the job but has no log file, and step 3's log has 7 lines.
+    links = [URL, URL + "#step:2:1", URL + "#step:3:8", URL + "#step:9:1", URL + "#step:7:2"]
+    monkeypatch.setattr(sys, "argv", ["gh-step-anchor", "--show", *links])
+    # When
+    with pytest.raises(SystemExit) as error:
+        anchor.main()
+    # Then
+    captured = capsys.readouterr()
+    assert error.value.code == 1
+    assert captured.out == URL + "#step:7:2  TARGET post\n"
+    assert captured.err.splitlines() == [
+        f"gh-step-anchor: {URL}: --show expects https://github.com/OWNER/REPO/actions/runs/RUN/job/JOB#step:N:L links",
+        f"gh-step-anchor: {URL}#step:2:1: can't tell which log lines belong to step 2; refusing to guess",
+        f"gh-step-anchor: {URL}#step:3:8: step 3's log has 7 lines, so line 8 doesn't exist",
+        f"gh-step-anchor: {URL}#step:9:1: step 9 is not in this job",
+    ]
+
+
+@pytest.mark.parametrize("arguments", [
+    ["--show", URL + "#step:1:2", "--all"],
+    ["--show", URL + "#step:1:2", "--step", "1"],
+    ["--show", URL + "#step:1:2", "--include-header"],
+    ["--run", "42", "--show", URL + "#step:1:2"],
+    [URL, "TARGET", "--show", URL + "#step:1:2"],
+    [URL],
+    [],
+])
+def test_cli_usage_error_when_show_mixes_with_a_search_or_the_search_is_incomplete(anchor: ModuleType, logs: Mock, monkeypatch: pytest.MonkeyPatch, arguments: list[str]) -> None:
+    # Given
+    monkeypatch.setattr(sys, "argv", ["gh-step-anchor", *arguments])
+    # When / Then
+    with pytest.raises(SystemExit) as error:
+        anchor.main()
+    assert error.value.code == 2
+    logs.assert_not_called()
+
+
+@pytest.mark.parametrize(("link", "expected"), [
+    (URL + "#step:3:1", ("repos/owner/repo", "17", 3, 1)),
+    (URL + "?check_suite_focus=true#step:12:345", ("repos/owner/repo", "17", 12, 345)),
+])
+def test_anchor_target_when_the_link_has_a_step_anchor(anchor: ModuleType, link: str, expected: tuple[str, str, int, int]) -> None:
+    # When / Then
+    assert anchor.anchor_target(link, None) == expected
+
+
+@pytest.mark.parametrize("link", [URL, URL + "#step:3:0", URL + "#step:3", URL + "#L5", "17",
+                                  "https://github.com/owner/repo/actions/runs/42#step:1:1"])
+def test_anchor_target_refuses_other_links(anchor: ModuleType, link: str) -> None:
+    # When / Then
+    with pytest.raises(anchor.AnchorError):
+        anchor.anchor_target(link, None)

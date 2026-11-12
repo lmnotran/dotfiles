@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Find GitHub Actions log permalinks for lines in a job's log.
+"""Find GitHub Actions log permalinks for lines in a job's log, or the line a permalink points at.
 
 Requires gh authentication, a completed job, and unexpired logs. A job URL supplies
 its repository; numeric IDs use --repo, GH_REPO, or the current gh repository context.
@@ -21,6 +21,11 @@ run's latest attempt, like "unittest-ci-scripts" for "Build / trigger_unit_test 
 unittest-ci-scripts". It must match exactly one job. --text prints each link with
 the line it points at. Transient GitHub errors (an HTTP/2 stream error, a 502,
 503, or 504, or a reset connection) are retried twice before giving up.
+
+--show goes the other way: it prints the line each #step:N:L link lands on, the way
+--text prints a match, so you can check the links in a draft before posting it. It
+reads each job's logs once, reports a link it can't resolve, and goes on to the
+next one.
 """
 
 import argparse
@@ -53,6 +58,8 @@ TRANSIENT_ERROR: Final = re.compile(r"stream error|connection reset|unexpected E
                                     r"TLS handshake timeout|HTTP 50[234]")
 RETRY_DELAYS: Final = (2.0, 5.0)
 JOBS_PER_PAGE: Final = 100
+NO_MATCH: Final = re.compile(r"(?!)")
+STEP_ANCHOR: Final = re.compile(r"step:(\d+):([1-9]\d*)")
 
 
 class AnchorError(Exception):
@@ -119,6 +126,15 @@ def job_target(value: str, repo: str | None) -> tuple[str, str]:
     if repo and repo.lower() != match[1].lower():
         raise AnchorError("--repo conflicts with the job URL's repository")
     return f"repos/{match[1]}", match[2]
+
+
+def anchor_target(value: str, repo: str | None) -> tuple[str, str, int, int]:
+    """The repository, job ID, step and line of a job URL ending in #step:N:L."""
+    match = STEP_ANCHOR.fullmatch(urlsplit(value).fragment)
+    if value.isdecimal() or not match:
+        raise AnchorError("--show expects https://github.com/OWNER/REPO/actions/runs/RUN/job/JOB#step:N:L links")
+    api, job_id = job_target(value, repo)
+    return api, job_id, int(match[1]), int(match[2])
 
 
 def run_target(value: str, repo: str | None) -> tuple[str, str]:
@@ -286,6 +302,61 @@ def resolve_step_logs(archive: ZipFile | None, job_log: str, steps: list[dict[st
         return split_by_step_times(job_log, steps, pattern)
 
 
+def fetch_job(repo: str, job_id: str) -> tuple[Job, list[dict[str, Any]]]:
+    """The job and its steps from the API. The job must be completed."""
+    raw = json.loads(gh(f"{repo}/actions/jobs/{job_id}"))
+    if raw["status"] != "completed":
+        raise AnchorError("job must be completed before its step logs can be downloaded")
+    job = Job(int(raw["run_id"]), int(raw["run_attempt"]), raw["html_url"],
+              frozenset(int(step["number"]) for step in raw["steps"]))
+    return job, raw["steps"]
+
+
+def fetch_step_logs(repo: str, job_id: str, job: Job, steps: list[dict[str, Any]],
+                    pattern: re.Pattern[str]) -> list[tuple[int, list[str]]]:
+    """Each step's lines, from the run's per-step logs or else the job log split by step times."""
+    job_log = gh(f"{repo}/actions/jobs/{job_id}/logs").decode("utf-8-sig")
+    try:
+        archive = gh(f"{repo}/actions/runs/{job.run_id}/attempts/{job.attempt}/logs")
+    except ApiError as error:
+        if "HTTP 404" not in str(error):
+            raise
+        print("gh-step-anchor: the run's log archive isn't there until the whole run finishes, "
+              "so this splits the job log by step times", file=sys.stderr)
+        logs = resolve_step_logs(None, job_log, steps, pattern)
+    else:
+        with ZipFile(io.BytesIO(archive)) as zip_file:
+            logs = resolve_step_logs(zip_file, job_log, steps, pattern)
+    if any(number not in job.steps for number, _ in logs):
+        raise AnchorError("archive step numbers disagree with job metadata; refusing to guess")
+    return logs
+
+
+def show_lines(links: list[str], repo: str | None) -> tuple[list[dict[str, Any]], list[str]]:
+    """The line each #step:N:L link lands on, and an error for each link that doesn't resolve."""
+    jobs: dict[tuple[str, str], tuple[Job, dict[int, list[str]]]] = {}
+    shown: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for link in links:
+        try:
+            api, job_id, step, line = anchor_target(link, repo)
+            if (api, job_id) not in jobs:
+                job, steps = fetch_job(api, job_id)
+                jobs[api, job_id] = job, dict(fetch_step_logs(api, job_id, job, steps, NO_MATCH))
+            job, logs = jobs[api, job_id]
+            if step not in job.steps:
+                raise AnchorError(f"step {step} is not in this job")
+            if step not in logs:
+                raise AnchorError(f"can't tell which log lines belong to step {step}; refusing to guess")
+            if line > len(logs[step]):
+                raise AnchorError(f"step {step}'s log has {len(logs[step])} lines, so line {line} doesn't exist")
+            shown.append({"step": step, "line": line, "text": ANSI_ESCAPE.sub("", logs[step][line - 1]), "url": link})
+        except (AnchorError, ApiError, BadZipFile, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError,
+                ValueError, subprocess.TimeoutExpired, OSError) as error:
+            errors.append(f"{link}: {error}")
+    return shown, errors
+
+
 def step_headers(lines: list[str]) -> set[int]:
     """Indexes of the lines in a step's headers: each "##[group]Run ..." group through its ##[endgroup].
 
@@ -314,15 +385,18 @@ def step_headers(lines: list[str]) -> set[int]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("job", help="job ID or GitHub Actions job URL. With --run, a regular expression for the "
-                                    "job's name")
-    parser.add_argument("pattern", help="regular expression to find in the log. Each line is tried with and "
-                                        "without GitHub's leading timestamp, so ^ anchors to the log text. "
-                                        "ANSI color codes are removed before matching")
+    parser.add_argument("job", nargs="?", help="job ID or GitHub Actions job URL. With --run, a regular expression "
+                                               "for the job's name")
+    parser.add_argument("pattern", nargs="?", help="regular expression to find in the log. Each line is tried with "
+                                                   "and without GitHub's leading timestamp, so ^ anchors to the log "
+                                                   "text. ANSI color codes are removed before matching")
     parser.add_argument("-R", "--repo", help="OWNER/REPO for a numeric job or run ID")
     parser.add_argument("--run", help="run ID or run URL. Finds the job by name in the run's latest attempt")
     parser.add_argument("--step", type=int, help="restrict to this API/UI step number")
     parser.add_argument("--all", action="store_true", help="print every matching line, not just the first")
+    parser.add_argument("--show", nargs="+", metavar="LINK",
+                        help="print the line each https://github.com/OWNER/REPO/actions/runs/RUN/job/JOB#step:N:L "
+                             "link lands on, instead of searching. Takes no job or pattern")
     output = parser.add_mutually_exclusive_group()
     output.add_argument("--json", action="store_true", help="emit matches with step, line, text and URL")
     output.add_argument("--text", action="store_true",
@@ -331,6 +405,20 @@ def main() -> None:
                         help="also match in step headers: a run step's script, a uses step's inputs, and the "
                              "shell and env lines the runner prints above a step's output")
     args = parser.parse_args()
+    if args.show:
+        if (args.job, args.pattern, args.run, args.step) != (None, None, None, None) or args.all or args.include_header:
+            parser.error("--show takes only links, plus --repo, --json or --text")
+        shown, errors = show_lines(args.show, args.repo)
+        if args.json:
+            print(json.dumps(shown, ensure_ascii=False, indent=2))
+        else:
+            for found in shown:
+                print(f"{found['url']}  {shown_text(found['text'])}")
+        if errors:
+            parser.exit(1, "".join(f"gh-step-anchor: {error}\n" for error in errors))
+        return
+    if args.job is None or args.pattern is None:
+        parser.error("the following arguments are required: job, pattern (or --show LINK)")
     try:
         pattern = re.compile(args.pattern)
         if args.run:
@@ -338,27 +426,10 @@ def main() -> None:
             job_id = find_job(repo, run_id, re.compile(args.job))
         else:
             repo, job_id = job_target(args.job, args.repo)
-        raw = json.loads(gh(f"{repo}/actions/jobs/{job_id}"))
-        if raw["status"] != "completed":
-            raise AnchorError("job must be completed before its step logs can be downloaded")
-        job = Job(int(raw["run_id"]), int(raw["run_attempt"]), raw["html_url"],
-                  frozenset(int(step["number"]) for step in raw["steps"]))
+        job, steps = fetch_job(repo, job_id)
         if args.step is not None and args.step not in job.steps:
             raise AnchorError(f"step {args.step} is not in this job")
-        job_log = gh(f"{repo}/actions/jobs/{job_id}/logs").decode("utf-8-sig")
-        try:
-            archive = gh(f"{repo}/actions/runs/{job.run_id}/attempts/{job.attempt}/logs")
-        except ApiError as error:
-            if "HTTP 404" not in str(error):
-                raise
-            print("gh-step-anchor: the run's log archive isn't there until the whole run finishes, "
-                  "so this splits the job log by step times", file=sys.stderr)
-            logs = resolve_step_logs(None, job_log, raw["steps"], pattern)
-        else:
-            with ZipFile(io.BytesIO(archive)) as zip_file:
-                logs = resolve_step_logs(zip_file, job_log, raw["steps"], pattern)
-        if any(number not in job.steps for number, _ in logs):
-            raise AnchorError("archive step numbers disagree with job metadata; refusing to guess")
+        logs = fetch_step_logs(repo, job_id, job, steps, pattern)
         matches: list[dict[str, Any]] = []
         header_matches = 0
         for number, lines in logs:
