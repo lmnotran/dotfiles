@@ -1,0 +1,14 @@
+{{- $userHost := printf "%s@%s" .chezmoi.username .chezmoi.hostname -}}
+{{- if or (hasPrefix "usmastra" .chezmoi.username) (has $userHost .work.knownUserHosts) -}}
+#!/usr/bin/env bash
+# Work machines: clone the private lmnotran/work-dotfiles before templates read it
+# (dot_gitconfig.tmpl takes the work email from it). A failed clone only warns.
+set -uo pipefail
+
+repo="$HOME/repos/work-dotfiles"
+[[ -d "$repo/.git" ]] && exit 0
+mkdir -p "$(dirname "$repo")"
+if ! git clone --quiet git@github-personal:lmnotran/work-dotfiles.git "$repo"; then
+    echo "work-dotfiles: couldn't clone lmnotran/work-dotfiles. Add the personal SSH key, then rerun chezmoi apply." >&2
+fi
+{{- end }}

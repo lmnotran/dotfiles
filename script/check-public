@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+# Fail when tracked files, staged changes or commit messages contain work-only words.
+
+set -euo pipefail
+
+work_dotfiles="${WORK_DOTFILES:-${HOME}/repos/work-dotfiles}"
+readonly work_dotfiles
+
+usage()
+{
+    cat <<EOF
+Usage: $(basename "$0") [--staged | --message FILE | --range REVS] [--redact]
+
+Fails when this public repo would publish a word from the private deny list.
+The list is \$PUBLIC_DENYLIST (one extended regex per line, used by CI), or
+else ${work_dotfiles}/deny-patterns.txt. Matches are case-insensitive.
+With no list it prints a warning and passes, except in CI.
+
+Options:
+    --staged        Check the lines added in the staged diff (pre-commit hook)
+    --message FILE  Check a commit message file (commit-msg hook)
+    --range REVS    Check the commit messages and added lines in REVS, e.g. A..B
+    --redact        Print only where a match is, not the matching text (public CI logs)
+    -h, --help      Show this help
+
+With no mode it checks every tracked file.
+EOF
+}
+
+# Print the deny patterns, one per line, without comments or blank lines.
+load_patterns()
+{
+    local patterns="${PUBLIC_DENYLIST:-}"
+    local list_file="${work_dotfiles}/deny-patterns.txt"
+
+    if [[ -z ${patterns} && -r ${list_file} ]]; then
+        patterns=$(<"${list_file}")
+    fi
+    grep -v -E '^[[:space:]]*(#|$)' <<<"${patterns}" || true
+}
+
+# Print each "location<TAB>text" match to stderr. Fails when there was one.
+report()
+{
+    local label=$1
+    local redact=$2
+    local matches=$3
+    local line
+
+    [[ -n ${matches} ]] || return 0
+    while IFS= read -r line; do
+        if [[ ${redact} == true ]]; then
+            echo "${label}: ${line%%$'\t'*}" >&2
+        else
+            echo "${label}: ${line/$'\t'/: }" >&2
+        fi
+    done <<<"${matches}"
+    return 1
+}
+
+# Lines on stdin that match a deny pattern. No match isn't an error.
+matching()
+{
+    local pattern_file=$1
+    grep -i -E -f "${pattern_file}" || true
+}
+
+# Added lines from a diff on stdin, as "file:line<TAB>text".
+added_lines()
+{
+    awk '
+        /^\+\+\+ / { file = substr($0, 7); next }
+        /^@@/ { split($3, start, ","); line = substr(start[1], 2) - 1; next }
+        /^\+/ { line++; print file ":" line "\t" substr($0, 2); next }
+        /^ / { line++ }
+    '
+}
+
+# Numbered message lines from stdin, as "line N<TAB>text".
+numbered_lines()
+{
+    awk '{ print "line " NR "\t" $0 }'
+}
+
+check_tracked()
+{
+    local pattern_file=$1
+    local redact=$2
+    local matches
+
+    matches=$(git grep -n -I -i -E -f "${pattern_file}" \
+        | awk '{ split($0, part, ":"); location = part[1] ":" part[2]; sub(/^[^:]*:[0-9]+:/, ""); print location "\t" $0 }' \
+        || true)
+    report "tracked" "${redact}" "${matches}"
+}
+
+check_staged()
+{
+    local pattern_file=$1
+    local redact=$2
+    local matches
+
+    matches=$(git diff --cached --no-color -U0 | added_lines | matching "${pattern_file}")
+    report "staged" "${redact}" "${matches}"
+}
+
+check_message()
+{
+    local pattern_file=$1
+    local redact=$2
+    local message_file=$3
+    local matches
+
+    matches=$(grep -v '^#' "${message_file}" | numbered_lines | matching "${pattern_file}")
+    report "commit message" "${redact}" "${matches}"
+}
+
+check_range()
+{
+    local pattern_file=$1
+    local redact=$2
+    local revs=$3
+    local status=0
+    local commit
+    local matches
+
+    for commit in $(git rev-list "${revs}"); do
+        matches=$(git log -1 --format=%B "${commit}" | numbered_lines | matching "${pattern_file}")
+        report "commit ${commit} message" "${redact}" "${matches}" || status=1
+        matches=$(git show --no-color -U0 --format= "${commit}" | added_lines | matching "${pattern_file}")
+        report "commit ${commit}" "${redact}" "${matches}" || status=1
+    done
+    return "${status}"
+}
+
+main()
+{
+    local mode=tracked
+    local redact=false
+    local message_file=""
+    local revs=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --staged) mode=staged ;;
+            --message)
+                mode=message
+                message_file=${2:?--message needs a file}
+                shift
+                ;;
+            --range)
+                mode=range
+                revs=${2:?--range needs revisions}
+                shift
+                ;;
+            --redact) redact=true ;;
+            -h | --help)
+                usage
+                exit 0
+                ;;
+            *)
+                echo "Unknown option: $1" >&2
+                usage >&2
+                exit 2
+                ;;
+        esac
+        shift
+    done
+
+    local patterns
+    patterns=$(load_patterns)
+
+    local in_ci=false
+    if [[ -n ${CI:-} ]]; then
+        in_ci=true
+    fi
+
+    if [[ -z ${patterns} ]]; then
+        if [[ ${in_ci} == true ]]; then
+            echo "check-public: PUBLIC_DENYLIST is empty" >&2
+            exit 1
+        fi
+        echo "check-public: no deny list (${work_dotfiles}/deny-patterns.txt), skipping" >&2
+        exit 0
+    fi
+
+    local pattern_file
+    pattern_file=$(mktemp)
+    trap 'rm -f "${pattern_file}"' EXIT
+    printf '%s\n' "${patterns}" >"${pattern_file}"
+
+    local status=0
+    case "${mode}" in
+        tracked) check_tracked "${pattern_file}" "${redact}" || status=1 ;;
+        staged) check_staged "${pattern_file}" "${redact}" || status=1 ;;
+        message) check_message "${pattern_file}" "${redact}" "${message_file}" || status=1 ;;
+        range) check_range "${pattern_file}" "${redact}" "${revs}" || status=1 ;;
+    esac
+
+    if [[ ${status} -ne 0 ]]; then
+        echo "check-public: work-only words found. Move them to lmnotran/work-dotfiles or use placeholders." >&2
+    fi
+    exit "${status}"
+}
+
+main "$@"

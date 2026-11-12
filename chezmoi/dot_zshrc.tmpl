@@ -119,7 +119,7 @@ export GO111MODULE=on
 {{- $isWork := or (hasPrefix "usmastra" .chezmoi.username) (has $userHost .work.knownUserHosts) -}}
 {{- if $isWork }}
 #===============================================================================
-# Work (work) config
+# Work config
 #===============================================================================
 source_if_exists "$HOME/.config/zsh/work.zsh"
 {{- end }}

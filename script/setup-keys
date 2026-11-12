@@ -29,15 +29,21 @@ SSH_WORK_PRIVATE="id_ed25519_work"
 
 # GitHub accounts that own each SSH key
 GH_PERSONAL_ACCOUNT="lmnotran"
-GH_WORK_ACCOUNT="work-account"
+# The work values live in the private lmnotran/work-dotfiles (setup-keys.env).
+WORK_ENV="${WORK_DOTFILES:-$HOME/repos/work-dotfiles}/setup-keys.env"
+GH_WORK_ACCOUNT=""
 
 # Work GitHub organization (used for the SSO authorization link)
-WORK_ORG="WORK-ORG"
+WORK_ORG=""
 
 # GPG signing identity (used as the key's user ID; matches dot_gitconfig.tmpl)
 GPG_NAME="Mason Tran"
 GPG_PERSONAL_EMAIL="mason@Lmnotran.com"
-GPG_WORK_EMAIL="work@example.com"
+GPG_WORK_EMAIL=""
+if [[ -r "$WORK_ENV" ]]; then
+    # shellcheck source=/dev/null
+    source "$WORK_ENV"
+fi
 
 # Track which SSH keys were generated so we can print SSO / manage links
 GENERATED_PERSONAL_SSH=0
@@ -294,7 +300,15 @@ do_personal_ssh() {
     GENERATED_PERSONAL_SSH=1
 }
 
+require_work_env() {
+    if [[ -z "$GH_WORK_ACCOUNT" || -z "$GPG_WORK_EMAIL" ]]; then
+        error "Work keys need $WORK_ENV (from the private lmnotran/work-dotfiles)."
+        exit 1
+    fi
+}
+
 do_work_ssh() {
+    require_work_env
     generate_ssh_key "work" "$SSH_WORK_PRIVATE" "$GH_WORK_ACCOUNT"
     GENERATED_WORK_SSH=1
 }
@@ -304,6 +318,7 @@ do_personal_gpg() {
 }
 
 do_work_gpg() {
+    require_work_env
     generate_gpg_key "work" "$GPG_WORK_EMAIL" "$GH_WORK_ACCOUNT"
 }
 
@@ -313,7 +328,7 @@ do_work_gpg() {
 print_menu() {
     echo "Which keys would you like to set up? (comma-separated, e.g. 1,2)"
     echo "  1) Personal SSH key  (generate locally, upload to gh '$GH_PERSONAL_ACCOUNT')"
-    echo "  2) work/work SSH key (generate locally, upload to gh '$GH_WORK_ACCOUNT')"
+    echo "  2) Work SSH key (generate locally, upload to gh '$GH_WORK_ACCOUNT')"
     echo "  3) Personal GPG key  (generate locally, upload to gh '$GH_PERSONAL_ACCOUNT')"
     echo "  4) Work GPG key      (generate locally, upload to gh '$GH_WORK_ACCOUNT')"
     echo "  a) All of the above"
@@ -327,9 +342,9 @@ normalize_selection() {
     sel=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
     case "$sel" in
         1|personal-ssh|personal_ssh)              echo "personal-ssh" ;;
-        2|work-ssh|work_ssh|work|work-ssh)        echo "work-ssh" ;;
+        2|work-ssh|work_ssh)                      echo "work-ssh" ;;
         3|personal-gpg|personal_gpg)              echo "personal-gpg" ;;
-        4|work-gpg|work_gpg|work-gpg)             echo "work-gpg" ;;
+        4|work-gpg|work_gpg)                      echo "work-gpg" ;;
         a|all)                                    echo "all" ;;
         q|quit|exit)                              echo "quit" ;;
         *)                                        echo "invalid:$sel" ;;

@@ -1,0 +1,40 @@
+name: Public check
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: No work-only words
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      # One extended regex per line, kept private as a secret. --redact keeps
+      # matched text out of this public log.
+      PUBLIC_DENYLIST: ${{ secrets.PUBLIC_DENYLIST }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check tracked files
+        run: script/check-public --redact
+      - name: Check the new commits
+        env:
+          BEFORE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          AFTER: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if [[ -z "$BEFORE" || "$BEFORE" =~ ^0+$ ]] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            script/check-public --redact --range "$AFTER^!"
+          else
+            script/check-public --redact --range "$BEFORE..$AFTER"
+          fi

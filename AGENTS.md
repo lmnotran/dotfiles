@@ -4,6 +4,12 @@ Context and rules for AI assistants working on this repository.
 
 ## Critical Rules
 
+### Public Repo
+- **This repo is public. Keep work-only content out of it.** That includes the employer's name, Jira site and project keys, GitHub org, internal hosts and tailnets, and internal CI details.
+- Put work-only helpers, config and tests in the private `lmnotran/work-dotfiles` (`~/repos/work-dotfiles`). Read its `AGENTS.md`.
+- Use placeholders like `OWNER/REPO`, `ABC-123` and `example.atlassian.net` in public examples and tests.
+- `script/check-public` must pass before a commit. Add new work-only words to the private `deny-patterns.txt`, never to this repo.
+
 ### Git Operations
 - **NEVER force push without explicit user confirmation.** Show the command and wait for approval before running:
   - `git push --force` / `git push -f`
@@ -28,7 +34,7 @@ Context and rules for AI assistants working on this repository.
 - `run_once_before_01-install-deps.sh.tmpl` runs `script/install-deps`.
 - `script/` holds setup and utility scripts.
 - Read `tests/tooling/README.md` when changing CLI helpers. Their offline tests live in `tests/tooling/`.
-- `.github/workflows/` holds dotfiles validation and tooling-test CI.
+- `.github/workflows/` holds dotfiles validation, tooling-test and public-check CI.
 - Read `docs/openchamber.md` when installing, updating, or troubleshooting OpenChamber.
 - `stow/karabiner/` holds Karabiner config. Use the Stow targets in `Makefile` to apply it.
 

@@ -98,6 +98,19 @@ Work configuration is selected when the username starts with `usmastra` or
 `username@hostname` appears in
 [`chezmoi/.chezmoidata.toml`](chezmoi/.chezmoidata.toml).
 
+### Work-only files
+
+Anything that names the employer, its services or internal hosts lives in a
+private repo, `lmnotran/work-dotfiles`. On work machines, `chezmoi apply`
+clones it to `~/repos/work-dotfiles` and runs its `install`, which links its
+helpers into `~/.local/bin`. The work Git email and `script/setup-keys` values
+come from it too.
+
+[`script/check-public`](script/check-public) keeps work-only words out of this
+repo. It reads a deny list from the private repo, or from the
+`PUBLIC_DENYLIST` secret in CI. On work machines, the `.githooks/` hooks run it
+on each commit.
+
 ## Secrets Management
 
 Secrets are managed separately from dotfiles using [Bitwarden Secrets Manager](https://bitwarden.com/products/secrets-manager/).
@@ -166,8 +179,9 @@ Type-check the Python helpers with
 |----------|--------|
 | **Tooling tests** | Helper tests on Python 3.11 and 3.13, plus mypy type checks. Uploads JUnit results. |
 | **Dotfiles CI** | Shell scripts, chezmoi apply, Zsh, Neovim, tmux, and the dependency installer's dry run. |
+| **Public check** | Tracked files and new commits against the private deny list. Prints only where a match is. |
 
-Both workflows support manual runs. Their
+All workflows support manual runs. Their
 [workflow files](.github/workflows/) define which changes trigger them.
 
 ### Allure reports

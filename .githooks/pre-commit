@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Keep work-only words out of this public repo. See script/check-public.
+exec "$(git rev-parse --show-toplevel)/script/check-public" --staged

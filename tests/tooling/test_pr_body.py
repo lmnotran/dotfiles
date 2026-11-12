@@ -72,7 +72,7 @@ def test_replacement_footer_wins_when_replacing_body(pr: ModuleType, monkeypatch
 
 
 def test_fetched_reference_kept_when_replacement_ends_with_issue_link(pr: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
-    # Given: a whole proj body ends with the standalone issue link, but the Jira integration's
+    # Given: a whole body ends with the standalone issue link, but the Jira integration's
     # reference definition is only on GitHub.
     replacement = "## Summary\nChanged\n\n[ABC-123](https://jira.invalid/browse/ABC-123)\n"
     monkeypatch.setattr(sys, "argv", ["gh-pr-body", "17", "--edit-file", "-"])

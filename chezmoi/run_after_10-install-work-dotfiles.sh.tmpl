@@ -1,0 +1,14 @@
+{{- $userHost := printf "%s@%s" .chezmoi.username .chezmoi.hostname -}}
+{{- if or (hasPrefix "usmastra" .chezmoi.username) (has $userHost .work.knownUserHosts) -}}
+#!/usr/bin/env bash
+# Work machines: link the private lmnotran/work-dotfiles into place.
+set -euo pipefail
+
+# The deny list only exists here, so the public repo's guard hooks only run here.
+git -C {{ .chezmoi.workingTree | quote }} config core.hooksPath .githooks
+
+install="$HOME/repos/work-dotfiles/install"
+if [[ -x "$install" ]]; then
+    "$install"
+fi
+{{- end }}

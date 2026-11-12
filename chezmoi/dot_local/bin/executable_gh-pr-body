@@ -39,7 +39,7 @@ Footer handling:
 - The footer is the trailing run of blank lines, markdown link-reference
   definitions ("[ABC-XXXX]: https://...?atlOrigin=...", auto-appended by
   the GitHub <-> Jira integration to power smart-link unfurling), and the
-  standalone issue link proj PR bodies carry at the bottom
+  standalone issue link PR bodies carry at the bottom
   ("[ABC-XXXX](https://...)").
 - It is split off before any section math and re-attached afterwards, so
   editing the *last* section preserves it. A whole-body replacement whose

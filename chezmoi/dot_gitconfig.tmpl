@@ -2,15 +2,13 @@
 	name = "Mason Tran"
 {{- $userHost := printf "%s@%s" .chezmoi.username .chezmoi.hostname -}}
 {{- $isWork := or (hasPrefix "usmastra" .chezmoi.username) (has $userHost .work.knownUserHosts) -}}
-{{- if $isWork }}
-	email = "work@example.com"
-{{- else }}
-	email = "mason@Lmnotran.com"
-{{- end }}
+{{- /* The work email lives in the private lmnotran/work-dotfiles, cloned by run_before_10-clone-work-dotfiles. */ -}}
+{{- $workGitConfig := joinPath .chezmoi.homeDir "repos" "work-dotfiles" "git" "config" -}}
 {{- $email := "mason@Lmnotran.com" -}}
-{{- if $isWork }}
-{{- $email = "work@example.com" -}}
+{{- if and $isWork (stat $workGitConfig) }}
+{{- $email = output "git" "config" "--file" $workGitConfig "user.email" | trim -}}
 {{- end }}
+	email = "{{ $email }}"
 {{- if lookPath "gpg" -}}
 {{-   $signingKey := output "sh" "-c" (printf "gpg --list-keys --keyid-format long --with-colons '%s' 2>/dev/null || true" $email) | regexFind "[A-F0-9]{16}" -}}
 {{-   if $signingKey }}

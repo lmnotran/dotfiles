@@ -35,7 +35,6 @@ agents, or edits a user's repo.
 | Helper and test file | What the tests check |
 |---|---|
 | [`gh-pr-body`](test_pr_body.py) | Section boundaries and footer preservation. Verified writes, repo selection, prose checks, and word limits. |
-| [`gh-pr-create`](test_pr_create.py) | proj title rules, prose checks, dry runs, and verified bodies. Jira links and API failures. |
 | [`gh-pr-grep`](test_pr_grep.py) | Diff parsing and line numbers, path prefilters, generated files, long lines, and sides. Failed diffs, JSON output, exit codes, and repo selection. |
 | [`gh-pr-merge`](test_pr_merge.py) | Merge blockers, reason comments, admin overrides, and dry runs. Checkbox parsing and follow-up notes. |
 | [`gh-pr-state`](test_pr_state.py) | Reviews, threads, checkboxes, checks, and branch protection. Unknown states and repo selection. |
@@ -48,16 +47,8 @@ agents, or edits a user's repo.
 | [`gh-run-failures`](test_run_failures.py) | Error extraction, cleanup, deduplication, and failed-step links. Polling, run states, and exit codes. |
 | [`gh-incidents`](test_incidents.py) | Open incidents behind an all-operational status, `--since` overlap including retroactive incidents, and components. Time parsing, JSON output, feed warnings, and unreachable or unexpected answers. |
 | [`gh-artifact-file`](test_artifact_file.py) | Artifact selection, pagination, file reads, and citations. Missing artifacts, invalid options, and insufficient matches. |
-| [`proj-image-build`](test_proj_image_build.py) | Image discovery, parent order, tags, and build targets. Preview and builder commands. |
-| [`proj-ci-local`](test_proj_ci_local.py) | Image selection, Docker mounts, command quoting, and registry-cli config. Cleanup and invalid checkout errors. |
 | [`ci-sample`](test_ci_sample.py) | Branch safety, cleanup previews, summaries, timing calculations, and workflow selection. |
 | [`md2adf`](test_md2adf.py) | Markdown conversion, nested lists, formatting, tables, links, and GitHub alerts as panels. File and stdin input. |
-| [`jira-put-description`](test_jira_description.py) | Input validation, prose checks, dry runs, payloads, and API failures. |
-| [`jira-comment`](test_jira_comment.py) | Create and edit payloads, comment IDs, prose checks, dry runs, and API failures. |
-| [`jira-create`](test_jira_create.py) | Defaults, overrides, prose checks, dry runs, and response validation. |
-| [`jira-search`](test_jira_search.py) | Query encoding, pagination, result limits, output formats, and API failures. |
-| [`alfred-jira`](test_alfred_jira.py) | JQL for no query, issue keys, bare numbers, and text. Alfred items, direct key links, and search failures. |
-| [`jira-view`](test_jira_view.py) | ADF rendering, missing descriptions, raw output, and API errors. Markdown output that round-trips through md2adf, panels included, and the parts it names as lost. |
 | [`claude-context-nudge`](test_context_nudge.py) | Token totals, warning levels, saved state, invalid data, and disabled mode. Prompt wording isn't tested. |
 | [`gh-step-anchor`](test_step_anchor.py) | Log matching, physical line numbers, skipped steps, and timestamps. Archive fallbacks and invalid or ambiguous logs. Job lookup by name, text output, and retries on transient errors. |
 | [`sandbox`](test_sandbox.py) | Real CLI help, unknown commands, and errors outside a repo. |
@@ -66,13 +57,15 @@ agents, or edits a user's repo.
 
 The linked test files list the individual cases.
 
+Work-only helpers and their tests live in the private `lmnotran/work-dotfiles`.
+
 ## Deliberate gaps
 
 - No live services, authentication, remote API schema checks, or browser
   confirmation of GitHub log anchors.
 - No CI collection commits, pushes, long-running polling, cleanup resets,
   amends, or force pushes. Cleanup tests use fake read responses and block writes.
-- No sandbox worktree lifecycle, tmux, agents, submodules, or Jira cleanup.
+- No sandbox worktree lifecycle, tmux, agents, or submodules.
 - Jira input validation checks only the top-level ADF `type: doc`.
 - Markdown conversion supports a subset of CommonMark.
 - Not every Jira formatted metadata field or every CLI file-input variant is
