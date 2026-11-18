@@ -42,7 +42,7 @@ agents, or edits a user's repo.
 | [`prose-lint`](test_prose_lint.py) | Rule matches and allowed text. Baselines, word limits, Markdown, Atlassian Document Format (ADF), and CLI exit codes. |
 | [`mermaid-render`](test_mermaid_render.py) | Each layout and dark-mode rule, and a diagram in the house style that passes them all. Mermaid blocks in Markdown with file line numbers, Chrome lookup, the light and dark mmdc commands, and failed renders. Real renders aren't tested. |
 | [`gh-review-body`](test_review_body.py) | Review selection, pagination, payloads, stdin editing, and verified writes. |
-| [`gh-run-timings`](test_run_timings.py) | Duration calculations, pagination, filters, sorting, skipped steps, and empty results. |
+| [`gh-run-timings`](test_run_timings.py) | Duration calculations, pagination, filters, sorting, skipped steps, and empty results. Repo selection from a run URL or `-R`, and runs it can't find. |
 | [`gh-queue-times`](test_queue_times.py) | Date-window run search, deduplication, job fetches, and caching. Rate-limit retries, queue-time stats, filters, output formats, and argument errors. |
 | [`gh-run-failures`](test_run_failures.py) | Error extraction, cleanup, deduplication, and failed-step links. Polling, run states, and exit codes. |
 | [`gh-incidents`](test_incidents.py) | Open incidents behind an all-operational status, `--since` overlap including retroactive incidents, and components. Time parsing, JSON output, feed warnings, and unreachable or unexpected answers. |

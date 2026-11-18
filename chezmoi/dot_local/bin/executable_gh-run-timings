@@ -2,13 +2,14 @@
 """gh-run-timings — per-job durations for a GitHub Actions workflow run.
 
 Usage:
-    gh-run-timings <run-id-or-url> [--pattern REGEX] [--sort KEY]
-                                   [--top N] [--steps] [--attempt N]
-                                   [--json]
+    gh-run-timings <run-id-or-url> [-R OWNER/REPO] [--pattern REGEX]
+                                   [--sort KEY] [--top N] [--steps]
+                                   [--attempt N] [--json]
 
 Prints a table of job name, queue (wait) time, run time, status, and
-end time. Pagination is handled automatically. Repo is inferred from
-`gh` context (run inside a clone, or set GH_REPO=owner/repo).
+end time. Pagination is handled automatically. A run or job URL supplies
+its repository. A numeric run ID uses -R, else GH_REPO, else the clone
+you run it in.
 
 Sort keys: start (default), end, duration, name.
 
@@ -16,7 +17,7 @@ Examples:
     gh-run-timings 12345678
     gh-run-timings 12345678 --pattern bnsim --sort duration --top 5
     gh-run-timings https://github.com/foo/bar/actions/runs/12345678 --steps
-    gh-run-timings 12345678 --attempt 2
+    gh-run-timings 12345678 -R foo/bar --attempt 2
 
 Footer prints workflow wall-clock (last completion - first start) so you
 can see what users wait for.
@@ -27,6 +28,8 @@ import re
 import subprocess
 import sys
 from datetime import datetime, timezone
+
+RUN_URL = re.compile(r"(?:https?://)?(?:www\.)?github\.com/([\w.-]+/[\w.-]+)/actions/runs/(\d+)(?:[/?#].*)?")
 
 
 def parse_ts(s):
@@ -52,17 +55,21 @@ def fmt_time(dt):
     return dt.strftime("%H:%M:%S") if dt else "-"
 
 
-def parse_run_id(arg):
-    if "/" in arg:
-        m = re.search(r"/runs/(\d+)", arg)
-        if not m:
-            sys.exit(f"can't parse run id from: {arg}")
-        return m.group(1)
-    return arg
+def run_target(arg, repo=None):
+    """The `gh api` repository path and the run ID, for a run ID or a run or job URL."""
+    if repo and not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
+        sys.exit(f"--repo must be OWNER/REPO, not: {repo}")
+    if arg.isdecimal():
+        return f"repos/{repo or '{owner}/{repo}'}", arg
+    m = RUN_URL.fullmatch(arg)
+    if not m:
+        sys.exit(f"can't parse run id from: {arg}")
+    if repo and repo.lower() != m.group(1).lower():
+        sys.exit(f"--repo {repo} conflicts with the run URL's repository, {m.group(1)}")
+    return f"repos/{m.group(1)}", m.group(2)
 
 
-def fetch_jobs(run_id, attempt=None):
-    repo = "repos/{owner}/{repo}"
+def fetch_jobs(repo, run_id, attempt=None):
     if attempt is not None:
         path = f"{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs"
     else:
@@ -78,7 +85,8 @@ def main():
         description=__doc__.split("\n\n", 1)[0],
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    ap.add_argument("run", help="Run id or URL")
+    ap.add_argument("run", help="Run ID, or a run or job URL")
+    ap.add_argument("-R", "--repo", help="OWNER/REPO for a numeric run ID. A URL supplies its own.")
     ap.add_argument("--pattern", help="Regex filter on job name")
     ap.add_argument(
         "--sort",
@@ -91,8 +99,13 @@ def main():
     ap.add_argument("--json", action="store_true", help="Emit JSON instead of a table")
     args = ap.parse_args()
 
-    run_id = parse_run_id(args.run)
-    jobs = fetch_jobs(run_id, args.attempt)
+    repo, run_id = run_target(args.run, args.repo)
+    try:
+        jobs = fetch_jobs(repo, run_id, args.attempt)
+    except subprocess.CalledProcessError:
+        where = "the current repository" if "{owner}" in repo else repo.removeprefix("repos/")
+        sys.exit(f"gh-run-timings: couldn't read run {run_id}'s jobs in {where}. "
+                 "For another repository's run, pass its URL or -R OWNER/REPO.")
 
     rows = []
     for j in jobs:

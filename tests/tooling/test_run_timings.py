@@ -25,10 +25,10 @@ def test_fetch_jobs_when_paginated_attempt_requested(timing: ModuleType, monkeyp
     api = Mock(return_value='{"id":1,"name":"parent / child"}\n\n{"id":2,"name":"other"}\n')
     monkeypatch.setattr(timing.subprocess, "check_output", api)
     # When
-    jobs = timing.fetch_jobs("42", attempt)
+    jobs = timing.fetch_jobs("repos/o/r", "42", attempt)
     # Then
     suffix = "" if attempt is None else "/attempts/3"
-    assert api.call_args.args[0] == ["gh", "api", f"repos/{{owner}}/{{repo}}/actions/runs/42{suffix}/jobs", "--paginate", "--jq", ".jobs[]"]
+    assert api.call_args.args[0] == ["gh", "api", f"repos/o/r/actions/runs/42{suffix}/jobs", "--paginate", "--jq", ".jobs[]"]
     assert [job["id"] for job in jobs] == [1, 2]
 
 
@@ -46,7 +46,8 @@ def test_json_cli_when_filter_sort_top_applied(timing: ModuleType, monkeypatch: 
     monkeypatch.setattr(sys, "stdout", output)
     # When
     timing.main()
-    # Then
+    # Then: the run URL's repository, not the current clone's.
+    assert api.call_args.args[0][2] == "repos/a/b/actions/runs/42/jobs"
     assert json.loads(output.getvalue()) == [{"id": 1, "name": "build / slow", "queue_seconds": 10.0, "run_seconds": 120.0, "status": "success", "started_at": "2026-01-01T00:00:10+00:00", "completed_at": "2026-01-01T00:02:10+00:00", "url": None}]
 
 
@@ -77,7 +78,34 @@ def test_empty_filter_when_no_jobs_match(timing: ModuleType, monkeypatch: pytest
     assert error.value.code == 1
 
 
-def test_run_url_when_missing_run_id(timing: ModuleType) -> None:
+@pytest.mark.parametrize("arg, repo, expected", [
+    ("42", None, ("repos/{owner}/{repo}", "42")),
+    ("42", "o/r", ("repos/o/r", "42")),
+    ("https://github.com/o/r/actions/runs/42", None, ("repos/o/r", "42")),
+    ("https://github.com/o/r/actions/runs/42/job/7#step:3:9", None, ("repos/o/r", "42")),
+    ("github.com/o/r.js/actions/runs/42/attempts/2", "O/R.JS", ("repos/o/r.js", "42")),
+])
+def test_run_target_when_id_or_url(timing: ModuleType, arg: str, repo: str | None, expected: tuple[str, str]) -> None:
     # Given / When / Then
-    with pytest.raises(SystemExit, match="can't parse run id"):
-        timing.parse_run_id("https://github.com/a/b/pull/42")
+    assert timing.run_target(arg, repo) == expected
+
+
+@pytest.mark.parametrize("arg, repo, message", [
+    ("https://github.com/a/b/pull/42", None, "can't parse run id"),
+    ("https://github.com/a/b/actions/runs/42", "c/d", "conflicts with the run URL's repository, a/b"),
+    ("42", "not-a-repo", "--repo must be OWNER/REPO"),
+])
+def test_run_target_when_invalid(timing: ModuleType, arg: str, repo: str | None, message: str) -> None:
+    # Given / When / Then
+    with pytest.raises(SystemExit, match=message):
+        timing.run_target(arg, repo)
+
+
+@pytest.mark.parametrize("argv, where", [(["42"], "the current repository"), (["42", "-R", "o/r"], "o/r")])
+def test_hint_when_run_lookup_fails(timing: ModuleType, monkeypatch: pytest.MonkeyPatch, argv: list[str], where: str) -> None:
+    # Given
+    monkeypatch.setattr(timing.subprocess, "check_output", Mock(side_effect=timing.subprocess.CalledProcessError(1, ["gh"])))
+    monkeypatch.setattr(sys, "argv", ["gh-run-timings", *argv])
+    # When / Then
+    with pytest.raises(SystemExit, match=f"run 42's jobs in {where}.*pass its URL or -R OWNER/REPO"):
+        timing.main()
