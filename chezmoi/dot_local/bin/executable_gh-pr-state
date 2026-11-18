@@ -9,9 +9,12 @@ Usage:
 
 It shows:
 - the head branch and SHA, draft state, and GitHub's merge state
+- how many commits the base branch has that the head doesn't, and when the
+  head's checks last finished
 - each reviewer's latest approval or change request, marked when it's on an
   older commit, and the reviews still requested
-- unresolved review threads, comments, and unchecked boxes in the body
+- unresolved review threads with who opened each, where, and its first line,
+  plus comments and unchecked boxes in the body
 - required and other checks by result, naming the ones that didn't pass
 - the native stack the PR is in, bottom to top
 - the base branch's review rules: approvals needed, code owners, whether a
@@ -32,6 +35,7 @@ from urllib.parse import quote
 _PR_URL_RE: Final = re.compile(r"^https://github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)/?$")
 _OPEN_BOX_RE: Final = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+\[ \]\s+")
 _REVIEW_LABELS: Final = {"APPROVED": "approved", "CHANGES_REQUESTED": "changes requested", "DISMISSED": "dismissed"}
+_THREAD_TEXT: Final = 100  # characters of a thread's first line to show
 _QUERY: Final = """
 query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
@@ -42,7 +46,8 @@ query($owner: String!, $name: String!, $number: Int!) {
       latestOpinionatedReviews(first: 100) { nodes { author { login } state submittedAt commit { oid } } }
       reviewRequests(first: 100) { nodes { requestedReviewer {
         ... on User { login } ... on Bot { login } ... on Mannequin { login } ... on Team { slug } } } }
-      reviewThreads(first: 100) { totalCount nodes { isResolved } }
+      reviewThreads(first: 100) { totalCount nodes { isResolved path line originalLine
+        comments(first: 1) { nodes { author { login } body } } } }
       comments(last: 1) { totalCount nodes { author { login } createdAt } }
     }
   }
@@ -70,13 +75,40 @@ def fetch_pr(owner: str, name: str, number: int) -> tuple[str, dict[str, Any]]:
 
 def pr_checks(repo: str, number: int, required: bool) -> list[dict[str, str]]:
     """Checks from `gh pr checks`, which exits nonzero while checks fail or run but still prints them."""
-    result = subprocess.run(["gh", "pr", "checks", str(number), "-R", repo, "--json", "name,workflow,bucket",
+    result = subprocess.run(["gh", "pr", "checks", str(number), "-R", repo, "--json", "name,workflow,bucket,completedAt",
                              *(["--required"] if required else [])], capture_output=True, text=True, check=False)
     if result.stdout.strip():
         return json.loads(result.stdout)
     if re.search(r"no (required )?checks reported", result.stderr):
         return []
     raise GhError(result.stderr.strip() or f"`gh pr checks` exited {result.returncode}")
+
+
+def behind_base(repo: str, base: str, head: str) -> int:
+    """How many commits the base branch has that the head doesn't."""
+    endpoint = f"repos/{repo}/compare/{quote(base, safe='/')}...{head}?per_page=1"
+    return int(gh("api", endpoint, "--jq", ".behind_by"))
+
+
+def checks_finished_at(checks: list[dict[str, str]]) -> str | None:
+    """When the latest finished check finished. `gh pr checks` gives an unfinished one year 1."""
+    finished = [check.get("completedAt") or "" for check in checks]
+    return max((stamp for stamp in finished if stamp and not stamp.startswith("0001")), default=None)
+
+
+def open_threads(threads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Each unresolved thread's author, file and line, and the first line of its first comment."""
+    found = []
+    for thread in threads:
+        if thread["isResolved"]:
+            continue
+        comments = (thread.get("comments") or {}).get("nodes") or [{}]
+        first = comments[0]
+        text = ((first.get("body") or "").strip().splitlines() or [""])[0]
+        found.append({"author": (first.get("author") or {}).get("login", "ghost"), "path": thread.get("path"),
+                      "line": thread.get("line") or thread.get("originalLine"),
+                      "text": text if len(text) <= _THREAD_TEXT else text[:_THREAD_TEXT - 1] + "…"})
+    return found
 
 
 def find_stack(repo: str, number: int) -> dict[str, Any] | None:
@@ -122,30 +154,34 @@ def unchecked_boxes(markdown: str) -> int:
 
 def collect(owner: str, name: str, number: int) -> dict[str, Any]:
     repo, pr = fetch_pr(owner, name, number)
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    head = pr["headRefOid"]
+    with ThreadPoolExecutor(max_workers=5) as pool:
         every = pool.submit(pr_checks, repo, number, False)
         required = pool.submit(pr_checks, repo, number, True)
         stack = pool.submit(find_stack, repo, number)
         rules = pool.submit(base_rules, repo, pr["baseRefName"])
+        behind = pool.submit(behind_base, repo, pr["baseRefName"], head)
 
         def outcome(future: Any) -> Any:
             try:
                 return future.result()
-            except (GhError, json.JSONDecodeError, KeyError, TypeError) as error:
+            except (GhError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
                 return {"error": str(error)}
 
-        checks, required_checks, stack_info, rules_info = (outcome(f) for f in (every, required, stack, rules))
+        checks, required_checks, stack_info, rules_info, behind_by = (
+            outcome(f) for f in (every, required, stack, rules, behind))
     if isinstance(checks, dict) or isinstance(required_checks, dict):
         check_split = checks if isinstance(checks, dict) else required_checks
     else:
         required_keys = {(c["workflow"], c["name"]) for c in required_checks}
         check_split = {"required": [c for c in checks if (c["workflow"], c["name"]) in required_keys],
                        "other": [c for c in checks if (c["workflow"], c["name"]) not in required_keys]}
-    head = pr["headRefOid"]
     last_comment = pr["comments"]["nodes"][-1] if pr["comments"]["nodes"] else None
     return {
         "repo": repo, "number": pr["number"], "title": pr["title"], "url": pr["url"], "state": pr["state"],
         "draft": pr["isDraft"], "head": {"ref": pr["headRefName"], "sha": head}, "base": pr["baseRefName"],
+        "behind": behind_by,
+        "checksFinishedAt": None if isinstance(checks, dict) else checks_finished_at(checks),
         "mergeable": pr["mergeable"], "mergeState": pr["mergeStateStatus"], "reviewDecision": pr["reviewDecision"],
         "reviews": [{"author": (r["author"] or {}).get("login", "ghost"), "state": r["state"],
                      "submittedAt": r["submittedAt"], "onHead": (r["commit"] or {}).get("oid") == head,
@@ -153,6 +189,7 @@ def collect(owner: str, name: str, number: int) -> dict[str, Any]:
         "requested": [node["requestedReviewer"].get("login") or node["requestedReviewer"].get("slug")
                       for node in pr["reviewRequests"]["nodes"] if node["requestedReviewer"]],
         "unresolvedThreads": sum(not thread["isResolved"] for thread in pr["reviewThreads"]["nodes"]),
+        "threads": open_threads(pr["reviewThreads"]["nodes"]),
         "comments": pr["comments"]["totalCount"],
         "lastComment": {"author": (last_comment["author"] or {}).get("login", "ghost"),
                         "createdAt": last_comment["createdAt"]} if last_comment else None,
@@ -176,11 +213,30 @@ def check_line(label: str, checks: list[dict[str, str]], name_buckets: tuple[str
     return lines
 
 
+def behind_line(state: dict[str, Any]) -> str:
+    behind, base = state["behind"], state["base"]
+    if isinstance(behind, dict):
+        line = f"Behind {base}: unknown ({behind['error']})."
+    elif behind:
+        line = f"Behind {base} by {behind} commit{'' if behind == 1 else 's'}."
+    else:
+        line = f"Up to date with {base}."
+    if state["checksFinishedAt"]:
+        line += f" Checks on this head last finished {state['checksFinishedAt'][:10]}."
+    return line
+
+
+def thread_line(thread: dict[str, Any]) -> str:
+    where = f" at {thread['path']}" + (f":{thread['line']}" if thread["line"] else "") if thread["path"] else ""
+    return f"  {thread['author']}{where}: {thread['text']}"
+
+
 def render(state: dict[str, Any]) -> str:
     lines = [f"PR #{state['number']}: {state['title']}",
              f"State: {state['state'].lower()}, {'draft' if state['draft'] else 'ready for review'}. "
              f"Merge state {state['mergeState']}, {state['mergeable'].lower()}.",
              f"Head: {state['head']['ref']} at {state['head']['sha'][:10]}, into {state['base']}",
+             behind_line(state),
              f"Reviews: {state['reviewDecision'] or 'none required'}"]
     for review_state, label in _REVIEW_LABELS.items():
         names = [r["author"] + ("" if r["onHead"] else f" (on {(r['commit'] or '')[:10]})")
@@ -193,6 +249,7 @@ def render(state: dict[str, Any]) -> str:
     lines.append(f"Conversation: {state['unresolvedThreads']} unresolved threads, {state['comments']} comments"
                  + (f" (last by {last['author']}, {last['createdAt']})" if last else "")
                  + f", {state['uncheckedBoxes']} unchecked boxes")
+    lines += [thread_line(thread) for thread in state["threads"]]
     checks = state["checks"]
     if "error" in checks:
         lines.append(f"Checks: unknown ({checks['error']})")

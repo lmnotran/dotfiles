@@ -10,13 +10,16 @@ import pytest
 HEAD: Final = "e" * 40
 OLD: Final = "a" * 40
 CHECKS: Final = [
-    {"name": "build", "workflow": "Product", "bucket": "pass"},
-    {"name": "unit", "workflow": "Product", "bucket": "pending"},
-    {"name": "hardware", "workflow": "Functional", "bucket": "fail"},
-    {"name": "lint", "workflow": "Validation", "bucket": "skipping"},
+    {"name": "build", "workflow": "Product", "bucket": "pass", "completedAt": "2026-11-04T19:04:01Z"},
+    {"name": "unit", "workflow": "Product", "bucket": "pending", "completedAt": "0001-01-01T00:00:00Z"},
+    {"name": "hardware", "workflow": "Functional", "bucket": "fail", "completedAt": "2026-11-04T19:10:00Z"},
+    {"name": "lint", "workflow": "Validation", "bucket": "skipping", "completedAt": "2026-11-04T18:00:00Z"},
 ]
 REQUIRED: Final = [{"name": "build", "workflow": "Product", "bucket": "pass"},
                    {"name": "unit", "workflow": "Product", "bucket": "pending"}]
+COMPARE: Final = f"repos/o/r/compare/master...{HEAD}?per_page=1"
+OPEN_THREAD: Final = {"isResolved": False, "path": "docs/adr.md", "line": 3, "originalLine": 2,
+                      "comments": {"nodes": [{"author": {"login": "eve"}, "body": "Typo here.\nAnd one more thing."}]}}
 
 
 @pytest.fixture
@@ -36,7 +39,7 @@ def pr(**changes: Any) -> dict[str, Any]:
             {"author": {"login": "cat"}, "state": "CHANGES_REQUESTED", "submittedAt": "t2", "commit": {"oid": HEAD}},
         ]},
         "reviewRequests": {"nodes": [{"requestedReviewer": {"login": "steven"}}, {"requestedReviewer": {"slug": "fw-team"}}]},
-        "reviewThreads": {"totalCount": 2, "nodes": [{"isResolved": True}, {"isResolved": False}]},
+        "reviewThreads": {"totalCount": 2, "nodes": [{"isResolved": True}, OPEN_THREAD]},
         "comments": {"totalCount": 3, "nodes": [{"author": {"login": "dan"}, "createdAt": "t3"}]},
     }
     return {**fields, **changes}
@@ -51,11 +54,13 @@ PROTECTION: Final = {"required_pull_request_reviews": {"required_approving_revie
 
 def serve(state: ModuleType, monkeypatch: pytest.MonkeyPatch, *, protection: object = PROTECTION,
           rulesets: list[dict[str, Any]] | None = None, stacks: list[list[dict[str, Any]]] | None = None,
-          checks: object = None, required: object = None, pull: dict[str, Any] | None = None) -> Mock:
+          checks: object = None, required: object = None, pull: dict[str, Any] | None = None,
+          behind: object = "3\n") -> Mock:
     api = {
         "repos/o/r/stacks?per_page=100": json.dumps([[STACK]] if stacks is None else stacks),
         "repos/o/r/branches/master/protection": protection,
         "repos/o/r/rules/branches/master": json.dumps(rulesets or []),
+        COMPARE: behind,
     }
 
     def gh(*args: str) -> str:
@@ -90,11 +95,13 @@ def test_summary_names_what_needs_attention(state: ModuleType, monkeypatch: pyte
         "PR #17: DOCS: Add an ADR (ABC-1)",
         "State: open, ready for review. Merge state UNSTABLE, mergeable.",
         "Head: feature/x at eeeeeeeeee, into master",
+        "Behind master by 3 commits. Checks on this head last finished 2026-11-04.",
         "Reviews: APPROVED",
         "  approved: ann, bob (on aaaaaaaaaa)",
         "  changes requested: cat",
         "  requested: steven, fw-team",
         "Conversation: 1 unresolved threads, 3 comments (last by dan, t3), 1 unchecked boxes",
+        "  eve at docs/adr.md:3: Typo here.",
         "Required checks (2): 1 pass, 1 pending",
         "  pending: unit",
         "Other checks (2): 1 fail, 1 skipping",
@@ -117,6 +124,51 @@ def test_json_splits_checks_by_workflow_and_name(state: ModuleType, monkeypatch:
     assert ("Nightly", "build") in [(c["workflow"], c["name"]) for c in out["checks"]["other"]]
     assert out["reviews"][1] == {"author": "bob", "state": "APPROVED", "submittedAt": "t0", "onHead": False, "commit": OLD}
     assert out["stack"]["number"] == 9
+    assert out["behind"] == 3
+    assert out["checksFinishedAt"] == "2026-11-04T19:10:00Z"
+
+
+@pytest.mark.parametrize("behind, line", [
+    ("0\n", "Up to date with master. Checks on this head last finished 2026-11-04."),
+    ("1\n", "Behind master by 1 commit. Checks on this head last finished 2026-11-04."),
+])
+def test_behind_line_counts_the_base_commits_the_head_lacks(state: ModuleType, monkeypatch: pytest.MonkeyPatch,
+                                                            capsys: pytest.CaptureFixture[str], behind: str, line: str) -> None:
+    # Given
+    serve(state, monkeypatch, behind=behind)
+    # When
+    state.main(["17", "-R", "o/r"])
+    # Then
+    assert capsys.readouterr().out.splitlines()[3] == line
+
+
+def test_behind_line_when_the_compare_fails_and_no_check_finished(state: ModuleType, monkeypatch: pytest.MonkeyPatch,
+                                                                 capsys: pytest.CaptureFixture[str]) -> None:
+    # Given
+    serve(state, monkeypatch, behind=state.GhError("gh: Not Found (HTTP 404)"), required=[],
+          checks=[{"name": "unit", "workflow": "Product", "bucket": "pending", "completedAt": "0001-01-01T00:00:00Z"}])
+    # When
+    state.main(["17", "-R", "o/r"])
+    # Then
+    assert capsys.readouterr().out.splitlines()[3] == "Behind master: unknown (gh: Not Found (HTTP 404))."
+
+
+def test_threads_show_their_first_line_and_fall_back_to_the_original_line(state: ModuleType, monkeypatch: pytest.MonkeyPatch,
+                                                                         capsys: pytest.CaptureFixture[str]) -> None:
+    # Given an outdated thread with a long comment, and one with nothing to show
+    serve(state, monkeypatch, pull=pr(reviewThreads={"totalCount": 3, "nodes": [
+        {"isResolved": True, "path": "b.py", "line": 1, "comments": {"nodes": []}},
+        {"isResolved": False, "path": "a.py", "line": None, "originalLine": 7,
+         "comments": {"nodes": [{"author": None, "body": "x" * 150}]}},
+        {"isResolved": False, "path": None, "line": None, "originalLine": None, "comments": {"nodes": []}},
+    ]}))
+    # When
+    state.main(["17", "-R", "o/r", "--json"])
+    # Then
+    assert json.loads(capsys.readouterr().out)["threads"] == [
+        {"author": "ghost", "path": "a.py", "line": 7, "text": "x" * 99 + "…"},
+        {"author": "ghost", "path": None, "line": None, "text": ""},
+    ]
 
 
 def test_url_selects_its_repository(state: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -212,7 +264,8 @@ def test_pr_checks_reads_json_despite_nonzero_exits(state: ModuleType, monkeypat
     monkeypatch.setattr(subprocess, "run", run)
     # When / Then
     assert state.pr_checks("o/r", 17, True) == expected
-    assert run.call_args.args[0] == ["gh", "pr", "checks", "17", "-R", "o/r", "--json", "name,workflow,bucket", "--required"]
+    assert run.call_args.args[0] == ["gh", "pr", "checks", "17", "-R", "o/r", "--json", "name,workflow,bucket,completedAt",
+                                     "--required"]
 
 
 def test_pr_checks_raises_on_other_errors(state: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:

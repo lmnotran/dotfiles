@@ -37,7 +37,7 @@ agents, or edits a user's repo.
 | [`gh-pr-body`](test_pr_body.py) | Section boundaries and footer preservation. Verified writes, repo selection, prose checks, and word limits. |
 | [`gh-pr-grep`](test_pr_grep.py) | Diff parsing and line numbers, path prefilters, generated files, long lines, and sides. Failed diffs, JSON output, exit codes, and repo selection. |
 | [`gh-pr-merge`](test_pr_merge.py) | Merge blockers, reason comments, admin overrides, and dry runs. Merge queues, already-queued PRs, `--wait`, checkbox parsing, and follow-up notes. |
-| [`gh-pr-state`](test_pr_state.py) | Reviews, threads, checkboxes, checks, and branch protection. Unknown states and repo selection. |
+| [`gh-pr-state`](test_pr_state.py) | Reviews, threads and their first lines, checkboxes, checks, and branch protection. How far behind the base it is and when its checks last finished. Unknown states and repo selection. |
 | [`gh-pr-trial`](test_pr_trial.py) | Push, cancel, wait, and revert order. Failed and unfinished runs, branch safety refusals, and repo selection. Real pushes aren't tested. |
 | [`prose-lint`](test_prose_lint.py) | Rule matches and allowed text. Baselines, word limits, Markdown, Atlassian Document Format (ADF), and CLI exit codes. |
 | [`mermaid-render`](test_mermaid_render.py) | Each layout and dark-mode rule, and a diagram in the house style that passes them all. Mermaid blocks in Markdown with file line numbers, Chrome lookup, the light and dark mmdc commands, and failed renders. Real renders aren't tested. |
