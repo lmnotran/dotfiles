@@ -47,8 +47,8 @@ bind T previous-window
 # window management
 bind n new-window -c "#{pane_current_path}"
 bind x kill-pane
-bind > swap-window -t +1 \; next-window
-bind < swap-window -t -1 \; previous-window
+bind '>' swap-window -t +1 \; next-window
+bind '<' swap-window -t -1 \; previous-window
 
 # -- copy mode -----------------------------------------------------------------
 
