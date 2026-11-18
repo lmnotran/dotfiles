@@ -1,3 +1,10 @@
-# ~/.gitconfig includes this for repos cloned through the github-personal SSH alias.
+# ~/.gitconfig includes this for repos cloned through the github-personal SSH alias, so they commit
+# with the personal email and sign with its key, even where [user] has the work ones.
 [user]
 	email = "{{ .personal.email }}"
+{{- if lookPath "gpg" -}}
+{{-   $signingKey := output "sh" "-c" (printf "gpg --list-keys --keyid-format long --with-colons '%s' 2>/dev/null || true" .personal.email) | regexFind "[A-F0-9]{16}" -}}
+{{-   if $signingKey }}
+	signingkey = {{ $signingKey }}
+{{-   end -}}
+{{- end }}
