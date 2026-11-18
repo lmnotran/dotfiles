@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+# Run a command in a temporary worktree of a branch merged into its base.
+
+set -euo pipefail
+
+usage()
+{
+    cat <<EOF
+Usage: $(basename "$0") [-h] [--base REF] [--keep] [BRANCH] -- COMMAND [ARG...]
+
+Merge BRANCH into REF in a temporary worktree, run COMMAND there, and remove
+the worktree. Use it to see whether a branch's own checks still pass on
+today's base before you rebase or merge it. Your checkout and branches stay
+as they are.
+
+It merges the refs you have, so fetch first. Checkout hooks don't run, and
+submodules aren't checked out.
+
+Options:
+  -h, --help     show this help and exit
+  --base REF     the branch to merge into. Defaults to origin/HEAD's branch,
+                 like origin/main.
+  --keep         keep the worktree, and print where it is
+
+Arguments:
+  BRANCH         the branch to merge. Defaults to HEAD.
+  COMMAND        what to run in the merged worktree, from its top folder
+
+Exit status: COMMAND's own, 3 when the merge has conflicts, 2 for a usage
+error, and 1 when git fails.
+
+Example:
+  git fetch origin
+  $(basename "$0") origin/feature/x -- python3 scripts/check.py
+EOF
+}
+
+usage_error()
+{
+    echo "$1" >&2
+    usage >&2
+    exit 2
+}
+
+parse_args()
+{
+    base=''
+    branch=''
+    keep=false
+    command=()
+
+    while (($# > 0)); do
+        case "$1" in
+            --base)
+                if (($# < 2)); then
+                    usage_error "--base needs a REF"
+                fi
+                base=$2
+                shift
+                ;;
+            --keep)
+                keep=true
+                ;;
+            -h | --help)
+                usage
+                exit 0
+                ;;
+            --)
+                shift
+                command=("$@")
+                break
+                ;;
+            -*)
+                usage_error "Unknown option: $1"
+                ;;
+            *)
+                if [[ -n ${branch} ]]; then
+                    usage_error "Only one BRANCH, got '${branch}' and '$1'"
+                fi
+                branch=$1
+                ;;
+        esac
+        shift
+    done
+
+    if ((${#command[@]} == 0)); then
+        usage_error "Give a COMMAND after --"
+    fi
+    branch=${branch:-HEAD}
+}
+
+# Prints the branch origin/HEAD points at, like origin/main.
+default_base()
+{
+    local remote_head
+    if ! remote_head=$(git rev-parse --abbrev-ref --verify --quiet origin/HEAD); then
+        echo "No origin/HEAD to default to. Pass --base, or run: git remote set-head origin --auto" >&2
+        return 1
+    fi
+    echo "${remote_head}"
+}
+
+# Exits when a ref doesn't name a commit, before anything is written.
+require_commit()
+{
+    local ref=$1
+    if ! git rev-parse --verify --quiet "${ref}^{commit}" >/dev/null; then
+        echo "Not a commit: ${ref}" >&2
+        exit 1
+    fi
+}
+
+# Merges the branch into the base without moving any ref, and sets tree. Exits 3 on conflicts.
+merge_tree()
+{
+    local output
+    local status=0
+    output=$(git merge-tree --write-tree --name-only --no-messages "${base}" "${branch}") || status=$?
+
+    if ((status == 1)); then
+        echo "${branch} conflicts with ${base} in:" >&2
+        tail -n +2 <<<"${output}" | sed 's/^/  /' >&2
+        exit 3
+    fi
+    if ((status != 0)); then
+        exit 1
+    fi
+    tree=$(head -n 1 <<<"${output}")
+}
+
+# Records the tree as a merge commit nothing points at, so tools that read history, like
+# git describe, see both parents. The identity is fixed, since the commit never leaves.
+commit_merge()
+{
+    merged=$(GIT_AUTHOR_NAME=git-merge-check \
+        GIT_AUTHOR_EMAIL=git-merge-check@localhost \
+        GIT_COMMITTER_NAME=git-merge-check \
+        GIT_COMMITTER_EMAIL=git-merge-check@localhost \
+        git commit-tree --no-gpg-sign "${tree}" \
+        -p "${base}" \
+        -p "${branch}" \
+        -m "git-merge-check: ${branch} into ${base}")
+}
+
+# Checks the merge out in a new temporary folder. Hooks are off, so a repo's
+# post-checkout setup doesn't run against a throwaway tree.
+add_worktree()
+{
+    scratch=$(mktemp -d "${TMPDIR:-/tmp}/git-merge-check.XXXXXX")
+    worktree="${scratch}/tree"
+    git -c core.hooksPath=/dev/null worktree add --quiet --detach "${worktree}" "${merged}"
+}
+
+# Removes the worktree and its folder, unless --keep asked to leave them.
+cleanup()
+{
+    if [[ -z ${scratch:-} ]]; then
+        return 0
+    fi
+    if [[ ${keep} == true ]]; then
+        echo "Kept the merged worktree at ${worktree}" >&2
+        return 0
+    fi
+    git worktree remove --force "${worktree}" 2>/dev/null || true
+    rm -rf "${scratch}"
+    git worktree prune
+}
+
+main()
+{
+    parse_args "$@"
+
+    if ! git rev-parse --git-dir >/dev/null 2>&1; then
+        echo "Run this inside a git repository." >&2
+        exit 1
+    fi
+    if [[ -z ${base} ]]; then
+        base=$(default_base)
+    fi
+    require_commit "${base}"
+    require_commit "${branch}"
+
+    scratch=''
+    trap cleanup EXIT
+    merge_tree
+    commit_merge
+    add_worktree
+    echo "Merged ${branch} ($(git rev-parse --short "${branch}")) into ${base} ($(git rev-parse --short "${base}")) at ${worktree}" >&2
+
+    local status=0
+    (cd "${worktree}" && "${command[@]}") || status=$?
+    return "${status}"
+}
+
+main "$@"

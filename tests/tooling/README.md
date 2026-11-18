@@ -58,6 +58,7 @@ agents, or edits a user's repo.
 | [`claude-context-nudge`](test_context_nudge.py) | Token totals, warning levels, saved state, invalid data, and disabled mode. Prompt wording isn't tested. |
 | [`gh-step-anchor`](test_step_anchor.py) | Log matching, physical line numbers, skipped steps, and timestamps. Archive fallbacks and invalid or ambiguous logs. Job lookup by name, text output, and retries on transient errors. `--show` lookups from a link back to its line, and links it can't resolve. |
 | [`sandbox`](test_sandbox.py) | Real CLI help, unknown commands, and errors outside a repo. |
+| [`git-merge-check`](test_git_merge_check.py) | The real CLI in a throwaway repo: the command runs on the merge and its status comes back, conflicts, the default base and branch, `--keep`, skipped checkout hooks, cleanup, and usage errors. |
 | [`oc-session-purge`](test_session_purge.py) | Session selection, ID validation, dry runs, file removal, and database failures. |
 | [`chamberctl`](test_chamberctl.py) | Real CLI help and unknown commands. Systemd calls aren't tested. |
 
