@@ -1,9 +1,11 @@
 import json
 import re
+import subprocess
 import sys
 from collections.abc import Callable
 from types import ModuleType
 from typing import Any, Final
+from unittest.mock import Mock
 
 import pytest
 
@@ -233,3 +235,43 @@ def test_invalid_pattern_exits_two(grep: ModuleType, monkeypatch: pytest.MonkeyP
     # Then
     assert status == 2
     assert re.search(r"invalid pattern", capsys.readouterr().err)
+
+
+def test_gh_retries_a_transient_error(grep: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    # Given
+    run = Mock(side_effect=[subprocess.CompletedProcess([], 1, "", "gh: Server Error (HTTP 502)\n"),
+                            subprocess.CompletedProcess([], 0, "payload", "")])
+    sleep = Mock()
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(grep.time, "sleep", sleep)
+    # When
+    payload = grep.gh("pr", "diff", "7")
+    # Then
+    assert payload == "payload"
+    assert run.call_count == 2
+    assert sleep.call_args_list == [((2.0,),)]
+    assert "retrying in 2s after: gh: Server Error (HTTP 502)" in capsys.readouterr().err
+
+
+def test_gh_gives_up_after_the_retries(grep: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Given
+    run = Mock(return_value=subprocess.CompletedProcess([], 1, "", "stream error: stream ID 1; CANCEL\n"))
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(grep.time, "sleep", Mock())
+    # When / Then
+    with pytest.raises(grep.GhError, match="stream error"):
+        grep.gh("pr", "diff", "7")
+    assert run.call_count == 3
+
+
+def test_gh_does_not_retry_other_errors(grep: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Given
+    run = Mock(return_value=subprocess.CompletedProcess([], 1, "", "could not find pull request diff: HTTP 406\n"))
+    sleep = Mock()
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(grep.time, "sleep", sleep)
+    # When / Then
+    with pytest.raises(grep.GhError, match="HTTP 406"):
+        grep.gh("pr", "diff", "7")
+    assert run.call_count == 1
+    sleep.assert_not_called()

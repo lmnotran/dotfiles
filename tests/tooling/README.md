@@ -35,7 +35,7 @@ agents, or edits a user's repo.
 | Helper and test file | What the tests check |
 |---|---|
 | [`gh-pr-body`](test_pr_body.py) | Section boundaries and footer preservation. Verified writes, repo selection, prose checks, and word limits. |
-| [`gh-pr-grep`](test_pr_grep.py) | Diff parsing and line numbers, path prefilters, generated files, long lines, and sides. Failed diffs, JSON output, exit codes, and repo selection. |
+| [`gh-pr-grep`](test_pr_grep.py) | Diff parsing and line numbers, path prefilters, generated files, long lines, and sides. Failed diffs, JSON output, exit codes, repo selection, and retries on transient errors. |
 | [`gh-pr-merge`](test_pr_merge.py) | Merge blockers, reason comments, admin overrides, and dry runs. Merge queues, already-queued PRs, `--wait`, checkbox parsing, and follow-up notes. |
 | [`gh-pr-state`](test_pr_state.py) | Reviews, threads and their first lines, checkboxes, checks, and branch protection. How far behind the base it is and when its checks last finished. Unknown states and repo selection. |
 | [`gh-pr-trial`](test_pr_trial.py) | Push, cancel, wait, and revert order. Failed and unfinished runs, branch safety refusals, and repo selection. Real pushes aren't tested. |
@@ -44,7 +44,7 @@ agents, or edits a user's repo.
 | [`gh-review-body`](test_review_body.py) | Review selection, pagination, payloads, stdin editing, and verified writes. |
 | [`gh-run-timings`](test_run_timings.py) | Duration calculations, pagination, filters, sorting, skipped steps, and empty results. Repo selection from a run URL or `-R`, and runs it can't find. |
 | [`gh-queue-times`](test_queue_times.py) | Date-window run search, deduplication, job fetches, and caching. Rate-limit retries, queue-time stats, filters, output formats, and argument errors. |
-| [`gh-run-failures`](test_run_failures.py) | Error extraction, cleanup, deduplication, and failed-step links. Polling, run states, and exit codes. |
+| [`gh-run-failures`](test_run_failures.py) | Error extraction, cleanup, deduplication, and failed-step links. Polling, run states, exit codes, and retries on transient errors. |
 | [`gh-incidents`](test_incidents.py) | Open incidents behind an all-operational status, `--since` overlap including retroactive incidents, and components. Time parsing, JSON output, feed warnings, and unreachable or unexpected answers. |
 | [`gh-artifact-file`](test_artifact_file.py) | Artifact selection, pagination, file reads, and citations. Missing artifacts, invalid options, and insufficient matches. |
 | [`ci-sample`](test_ci_sample.py) | Branch safety, cleanup previews, summaries, timing calculations, and workflow selection. |

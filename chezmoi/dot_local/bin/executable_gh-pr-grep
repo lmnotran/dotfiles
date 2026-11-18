@@ -17,6 +17,9 @@ package-lock.json) are skipped, and so are changed lines over --max-line
 characters, so vendored bundles don't flood the output. A PR with 100 or more
 changed files is always fetched, because the file list stops at 100.
 
+Transient GitHub errors (an HTTP/2 stream error, a 502, 503, or 504, or a reset
+connection) are retried twice before giving up.
+
 Exit status: 0 when a line matched, 1 when none did, 2 on an error.
 
 Examples:
@@ -29,6 +32,7 @@ import json
 import re
 import subprocess
 import sys
+import time
 from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
@@ -40,6 +44,11 @@ GENERATED: Final = ("dist/*", "*/dist/*", "node_modules/*", "*/node_modules/*", 
 LISTED_FILES: Final = 100  # gh pr list returns at most this many files per PR
 HUNK: Final = re.compile(r"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 WORKERS: Final = 8
+# gh's error output for failures worth another try, like "stream error: stream ID 1; CANCEL;
+# received from peer" when GitHub drops an HTTP/2 stream mid-download.
+TRANSIENT_ERROR: Final = re.compile(r"stream error|connection reset|unexpected EOF|i/o timeout|"
+                                    r"TLS handshake timeout|HTTP 50[234]")
+RETRY_DELAYS: Final = (2.0, 5.0)
 
 
 class GhError(Exception):
@@ -72,11 +81,23 @@ class Result:
     error: str | None = None  # why the PR's diff couldn't be fetched
 
 
-def gh(*args: str) -> str:
+def gh_once(*args: str) -> str:
     result = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=300, check=False)
     if result.returncode != 0:
         raise GhError(result.stderr.strip() or f"`gh {' '.join(args)}` exited {result.returncode}")
     return result.stdout
+
+
+def gh(*args: str) -> str:
+    for delay in RETRY_DELAYS:
+        try:
+            return gh_once(*args)
+        except GhError as error:
+            if not TRANSIENT_ERROR.search(str(error)):
+                raise
+            print(f"gh-pr-grep: retrying in {delay:g}s after: {str(error).splitlines()[-1]}", file=sys.stderr)
+            time.sleep(delay)
+    return gh_once(*args)
 
 
 def repo_args(repo: str | None) -> list[str]:

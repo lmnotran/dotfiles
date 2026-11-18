@@ -15,6 +15,9 @@ workspace prefix are stripped. Nested jobs from reusable workflows are included.
 sleep-and-check loop. Exit status: 0 when the run finished with no failed job,
 1 when a job failed, 2 when the run is still going, 3 when the run can't be read.
 
+Transient GitHub errors (an HTTP/2 stream error, a 502, 503, or 504, or a reset
+connection) are retried twice before giving up.
+
 Examples:
     gh-run-failures 40752533386 -R OWNER/REPO
     gh-run-failures https://github.com/OWNER/REPO/actions/runs/40752533386
@@ -44,6 +47,11 @@ PROBLEM: Final = re.compile(
     r"|^(?:[\w.]+\.)?\w*(?:Error|Exception): "  # last line of a Python traceback
 )
 MAX_LINE: Final = 300
+# gh's error output for failures worth another try, like "stream error: stream ID 1; CANCEL;
+# received from peer" when GitHub drops an HTTP/2 stream mid-download.
+TRANSIENT_ERROR: Final = re.compile(r"stream error|connection reset|unexpected EOF|i/o timeout|"
+                                    r"TLS handshake timeout|HTTP 50[234]")
+RETRY_DELAYS: Final = (2.0, 5.0)
 
 
 class ApiError(Exception):
@@ -56,11 +64,23 @@ class Target:
     run_id: str
 
 
-def gh(*args: str) -> str:
+def gh_once(*args: str) -> str:
     result = subprocess.run(["gh", "api", *args], capture_output=True, text=True, timeout=120, check=False)
     if result.returncode != 0:
         raise ApiError(result.stderr.strip() or f"`gh api {' '.join(args)}` exited {result.returncode}")
     return result.stdout
+
+
+def gh(*args: str) -> str:
+    for delay in RETRY_DELAYS:
+        try:
+            return gh_once(*args)
+        except ApiError as error:
+            if not TRANSIENT_ERROR.search(str(error)):
+                raise
+            print(f"gh-run-failures: retrying in {delay:g}s after: {str(error).splitlines()[-1]}", file=sys.stderr)
+            time.sleep(delay)
+    return gh_once(*args)
 
 
 def parse_target(value: str, repo: str | None) -> Target:

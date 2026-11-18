@@ -1,4 +1,5 @@
 import json
+import subprocess
 import sys
 from collections.abc import Callable
 from types import ModuleType
@@ -171,3 +172,43 @@ def test_cli_when_gh_fails(failures: ModuleType, monkeypatch: pytest.MonkeyPatch
     # Then
     assert exit_info.value.code == 3
     assert capsys.readouterr().err == "gh-run-failures: HTTP 404: Not Found\n"
+
+
+def test_gh_retries_a_transient_error(failures: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    # Given
+    run = Mock(side_effect=[subprocess.CompletedProcess([], 1, "", "gh: Server Error (HTTP 502)\n"),
+                            subprocess.CompletedProcess([], 0, "payload", "")])
+    sleep = Mock()
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(failures.time, "sleep", sleep)
+    # When
+    payload = failures.gh("repos/owner/repo/actions/runs/42")
+    # Then
+    assert payload == "payload"
+    assert run.call_count == 2
+    assert sleep.call_args_list == [((2.0,),)]
+    assert "retrying in 2s after: gh: Server Error (HTTP 502)" in capsys.readouterr().err
+
+
+def test_gh_gives_up_after_the_retries(failures: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Given
+    run = Mock(return_value=subprocess.CompletedProcess([], 1, "", "gh: Bad Gateway (HTTP 502)\n"))
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(failures.time, "sleep", Mock())
+    # When / Then
+    with pytest.raises(failures.ApiError, match="HTTP 502"):
+        failures.gh("repos/owner/repo/actions/runs/42")
+    assert run.call_count == 3
+
+
+def test_gh_does_not_retry_a_missing_log(failures: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Given
+    run = Mock(return_value=subprocess.CompletedProcess([], 1, "", "gh: Not Found (HTTP 404)\n"))
+    sleep = Mock()
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(failures.time, "sleep", sleep)
+    # When / Then
+    with pytest.raises(failures.ApiError, match="HTTP 404"):
+        failures.gh("repos/owner/repo/actions/jobs/7/logs")
+    assert run.call_count == 1
+    sleep.assert_not_called()
