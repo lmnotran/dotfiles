@@ -31,6 +31,7 @@ def isolated_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     # Placeholder Jira settings, read by the jira-* helpers when they load.
     monkeypatch.setenv("JIRA_BASE_URL", "https://example.atlassian.net")
     monkeypatch.setenv("JIRA_DEFAULT_PROJECT", "ABC")
+    monkeypatch.setenv("JIRA_DEFAULT_COMPONENT", "Platform")
     monkeypatch.setenv("JIRA_ACCOUNT_ID", "test-account")
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "tmpdir"))
     monkeypatch.setattr(sys, "dont_write_bytecode", True)

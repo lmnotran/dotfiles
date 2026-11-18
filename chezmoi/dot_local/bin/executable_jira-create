@@ -3,10 +3,13 @@
 
 Usage:
     jira-create --summary S [--type Task] [--project KEY] [--parent KEY]
-                [--assignee me|none|ACCOUNT_ID] <file.md|-> [--dry-run]
+                [--assignee me|none|ACCOUNT_ID] [--component NAME|none]
+                <file.md|-> [--dry-run]
 
 --parent only works when the parent is an Epic. A Task parent needs a Contain
 link instead; this command does not create links. Check for duplicates first.
+An issue in JIRA_DEFAULT_PROJECT gets JIRA_DEFAULT_COMPONENT unless you pass
+--component. Pass --component none to leave the component off.
 --dry-run prints method, endpoint and payload without sending a request.
 Before sending (and in --dry-run), the description goes through `prose-lint`.
 Any finding stops the request. Fix it, or pass --no-lint for text you didn't write.
@@ -44,6 +47,7 @@ def jira_config(name: str, default: str = "") -> str:
 BASE: Final = jira_config("JIRA_BASE_URL").rstrip("/")
 ME: Final = jira_config("JIRA_ACCOUNT_ID")
 DEFAULT_PROJECT: Final = jira_config("JIRA_DEFAULT_PROJECT")
+DEFAULT_COMPONENT: Final = jira_config("JIRA_DEFAULT_COMPONENT")
 
 
 def load_helper(name: str) -> ModuleType | None:
@@ -81,6 +85,7 @@ def main() -> None:
                     help="Project key (default: JIRA_DEFAULT_PROJECT)")
     ap.add_argument("--parent", help="Epic key; a Task parent needs a Contain link instead")
     ap.add_argument("--assignee", default="me", help="me (default), none (unassigned), or an accountId; not an email")
+    ap.add_argument("--component", help="Component name, or none (default: JIRA_DEFAULT_COMPONENT in the default project)")
     ap.add_argument("--dry-run", action="store_true", help="Print request without sending it")
     ap.add_argument("--no-lint", action="store_true", help="Skip the prose-lint check, for text you didn't write")
     args = ap.parse_args()
@@ -105,6 +110,9 @@ def main() -> None:
               "assignee": {"accountId": None if args.assignee == "none" else ME if args.assignee == "me" else args.assignee}}
     if args.parent:
         fields["parent"] = {"key": args.parent}
+    component = args.component or (DEFAULT_COMPONENT if args.project == DEFAULT_PROJECT else "")
+    if component and component != "none":
+        fields["components"] = [{"name": component}]
     payload = {"fields": fields}
     endpoint = f"{BASE}/rest/api/3/issue"
     if args.dry_run:

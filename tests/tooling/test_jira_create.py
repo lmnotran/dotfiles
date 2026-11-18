@@ -44,7 +44,7 @@ def test_payload_when_defaults(create: ModuleType, monkeypatch: pytest.MonkeyPat
     assert "-n" in command
     assert json.loads(curl.call_args.kwargs["input"]) == {"fields": {
         "project": {"key": "ABC"}, "issuetype": {"name": "Task"}, "summary": "New issue",
-        "assignee": {"accountId": "test-account"},
+        "assignee": {"accountId": "test-account"}, "components": [{"name": "Platform"}],
         "description": {"type": "doc", "version": 1, "content": [{"type": "heading", "attrs": {"level": 1},
                          "content": [{"type": "text", "text": "Context"}]}]},
     }}
@@ -69,6 +69,36 @@ def test_dry_run_when_overrides(create: ModuleType, monkeypatch: pytest.MonkeyPa
     assert request["payload"] == {"fields": {"summary": "Override", "project": {"key": "OTHER"}, "issuetype": {"name": "Bug"},
         "parent": {"key": "OTHER-1"}, "assignee": {"accountId": account},
         "description": {"type": "doc", "version": 1, "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Description"}]}]}}}
+
+
+@pytest.mark.parametrize("argv,components", [
+    ([], [{"name": "Platform"}]),
+    (["--component", "Other team"], [{"name": "Other team"}]),
+    (["--component", "none"], None),
+    (["--project", "OTHER"], None),
+    (["--project", "OTHER", "--component", "Other team"], [{"name": "Other team"}]),
+])
+def test_components_when_flags(create: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+                               argv: list[str], components: list[dict[str, str]] | None) -> None:
+    # Given
+    monkeypatch.setattr(sys, "argv", ["jira-create", "--summary", "S", *argv, "--dry-run", "-"])
+    # When
+    create.main()
+    # Then: the default component only belongs to the default project.
+    assert json.loads(capsys.readouterr().out)["payload"]["fields"].get("components") == components
+
+
+def test_no_components_when_default_unset(tool: Callable[[str], ModuleType], monkeypatch: pytest.MonkeyPatch,
+                                          capsys: pytest.CaptureFixture[str]) -> None:
+    # Given
+    monkeypatch.delenv("JIRA_DEFAULT_COMPONENT")
+    monkeypatch.setattr(sys, "argv", ["jira-create", "--summary", "S", "--dry-run", "-"])
+    monkeypatch.setattr(sys, "stdin", io.StringIO("Description"))
+    create = tool("jira-create")
+    # When
+    create.main()
+    # Then
+    assert "components" not in json.loads(capsys.readouterr().out)["payload"]["fields"]
 
 
 @pytest.mark.parametrize("code", ["200", "204", "400", "403"])

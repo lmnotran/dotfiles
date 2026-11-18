@@ -109,6 +109,8 @@ values and `~/.config/jira/env` come from it too.
 The `jira-*` helpers and `alfred-jira` read `JIRA_BASE_URL`,
 `JIRA_DEFAULT_PROJECT` and `JIRA_ACCOUNT_ID` from the environment or from
 `~/.config/jira/env` (`KEY=value` lines). They authenticate with `~/.netrc`.
+`jira-create` also reads `JIRA_DEFAULT_COMPONENT`, the component it sets on new
+issues in the default project.
 
 [`script/check-public`](script/check-public) keeps work-only words out of this
 repo. It reads a deny list from the private repo, or from the
