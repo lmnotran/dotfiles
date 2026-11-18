@@ -4,3 +4,7 @@
 knownUserHosts = [
   "mason@allston-st",
 ]
+
+# The email personal repos commit with, on every machine
+[personal]
+email = "mason@Lmnotran.com"

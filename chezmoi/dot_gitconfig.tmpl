@@ -4,7 +4,7 @@
 {{- $isWork := or (hasPrefix "usmastra" .chezmoi.username) (has $userHost .work.knownUserHosts) -}}
 {{- /* The work email lives in the private lmnotran/work-dotfiles, cloned by run_before_10-clone-work-dotfiles. */ -}}
 {{- $workGitConfig := joinPath .chezmoi.homeDir "repos" "work-dotfiles" "git" "config" -}}
-{{- $email := "mason@Lmnotran.com" -}}
+{{- $email := .personal.email -}}
 {{- if and $isWork (stat $workGitConfig) }}
 {{- $email = output "git" "config" "--file" $workGitConfig "user.email" | trim -}}
 {{- end }}
@@ -15,6 +15,12 @@
 	signingkey = {{ $signingKey }}
 {{-   end -}}
 {{- end }}
+{{- /* A repo cloned through the github-personal SSH alias is personal, so it commits with the personal
+       email even where [user] has the work one. The include comes after [user], so it wins. */}}
+[includeIf "hasconfig:remote.*.url:github-personal:*/**"]
+	path = ~/.config/git/personal
+[includeIf "hasconfig:remote.*.url:git@github-personal:*/**"]
+	path = ~/.config/git/personal
 [commit]
 	gpgsign = true
 [pull]
