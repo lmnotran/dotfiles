@@ -56,6 +56,7 @@ agents, or edits a user's repo.
 | [`jira-move`](test_jira_move.py) | The transition picked by its target status, the status read back, issues already there, and the statuses an issue can reach. Dry runs, failed keys that don't stop the rest, API failures, usage errors, and a missing site. |
 | [`jira-search`](test_jira_search.py) | Query encoding, pagination, result limits, output formats, API failures, and a missing site. |
 | [`jira-sprints`](test_jira_sprints.py) | Pagination, keeping only the board's own sprints, state filters, output formats, API failures, usage errors, and a missing site. |
+| [`jira-sprint-add`](test_jira_sprint_add.py) | A closed sprint stopped before any change, calls of at most 50 keys, and the search that finds each issue in the sprint or names the ones it doesn't. Moved issues' current keys, dry runs, API failures, usage errors, and a missing site. |
 | [`jira-view`](test_jira_view.py) | ADF rendering, missing descriptions, raw output, and API errors. Markdown output that round-trips through md2adf, panels included, and the parts it names as lost. |
 | [`claude-context-nudge`](test_context_nudge.py) | Token totals, warning levels, saved state, invalid data, and disabled mode. Prompt wording isn't tested. |
 | [`gh-step-anchor`](test_step_anchor.py) | Log matching, physical line numbers, skipped steps, and timestamps. Archive fallbacks and invalid or ambiguous logs. Job lookup by name, text output, and retries on transient errors. `--show` lookups from a link back to its line, and links it can't resolve. |

@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+"""jira-sprint-add — add Jira issues to a sprint, and check they're in it.
+
+Usage:
+    jira-sprint-add SPRINT KEY... [--dry-run]
+
+SPRINT is the sprint's id, as jira-sprints lists it. Jira adds issues only to
+an active or future sprint, and answers a closed one with a bare 400, so a
+closed sprint stops this before any change.
+It sends at most 50 keys a call. Then a JQL search checks that every issue is
+in the sprint now, and it prints `204  sprint <id> (<name>)  +KEY +KEY`.
+It exits 1 naming any issue that isn't.
+--dry-run makes the same reads, then prints the POST it would send.
+Auth via ~/.netrc (`machine <your-site>.atlassian.net`); uses `curl -n`.
+The site comes from JIRA_BASE_URL, in the environment or ~/.config/jira/env.
+"""
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import Final
+
+
+def jira_config(name: str, default: str = "") -> str:
+    """A setting from the environment, else from ~/.config/jira/env (KEY=value lines)."""
+    if os.environ.get(name):
+        return os.environ[name]
+    path = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "jira" / "env"
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return default
+    for line in lines:
+        key, sep, value = line.strip().partition("=")
+        if sep and key.strip() == name:
+            return value.strip().strip("\"'")
+    return default
+
+
+BASE: Final = jira_config("JIRA_BASE_URL").rstrip("/")
+ISSUE_KEY: Final = re.compile(r"[A-Z][A-Z0-9_]*-[1-9][0-9]*")
+# The most issues the agile API moves, and a search reconciles, in one call.
+BATCH: Final = 50
+
+
+class Failed(Exception):
+    """A request Jira didn't answer as expected. The message says how."""
+
+
+def issue_key(value: str) -> str:
+    """An issue key like ABC-123, in capitals."""
+    key = value.strip().upper()
+    if not ISSUE_KEY.fullmatch(key):
+        raise argparse.ArgumentTypeError(f"not an issue key like ABC-123: {value!r}")
+    return key
+
+
+def dig(value: object, *names: str) -> object:
+    """value[name][name]..., or None where a step isn't a dict or lacks the name."""
+    for name in names:
+        value = value.get(name) if isinstance(value, dict) else None
+    return value
+
+
+def text(value: object) -> str:
+    """The value when it's a string, else an empty one."""
+    return value if isinstance(value, str) else ""
+
+
+def call(method: str, path: str, payload: dict | None = None, expect: str = "200") -> object:
+    """Jira's JSON answer to one request, or None when the answer has no body."""
+    command = ["curl", "-n", "-sS", "--connect-timeout", "10", "--max-time", "60",
+               "-X", method, "-H", "Accept: application/json", "-w", "\n%{http_code}"]
+    if payload is not None:
+        command += ["-H", "Content-Type: application/json", "--data-binary", "@-"]
+    out = subprocess.run([*command, BASE + path], input=None if payload is None else json.dumps(payload),
+                         capture_output=True, text=True)
+    if out.returncode:
+        raise Failed(f"curl failed ({out.returncode}): {out.stderr}")
+    body, _, code = out.stdout.rpartition("\n")
+    if code != expect:
+        raise Failed(f"HTTP {code}\n{body}")
+    if not body.strip():
+        return None
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError:
+        raise Failed(f"HTTP {code}: non-JSON response\n{body}") from None
+
+
+def open_sprint(sprint: int) -> str:
+    """The sprint's label, like `sprint 42 (Sprint name)`, once it's known not to be closed."""
+    found = call("GET", f"/rest/agile/1.0/sprint/{sprint}")
+    state = text(dig(found, "state"))
+    if not state:
+        raise Failed(f"HTTP 200: missing sprint state\n{json.dumps(found)}")
+    name = " ".join(text(dig(found, "name")).split())
+    label = f"sprint {sprint} ({name})" if name else f"sprint {sprint}"
+    if state == "closed":
+        closed = text(dig(found, "completeDate"))
+        raise Failed(f"{label} closed{' at ' + closed if closed else ''}. "
+                     "Jira adds issues only to an active or future sprint.")
+    return label
+
+
+def issue_ids(keys: list[str]) -> dict[str, int]:
+    """Each issue's key and numeric id, as the issue itself has them now."""
+    ids: dict[str, int] = {}
+    for key in keys:
+        try:
+            issue = call("GET", f"/rest/api/3/issue/{key}?fields=*none")
+        except Failed as error:
+            raise Failed(f"{key}: {error}") from None
+        current, number = text(dig(issue, "key")), text(dig(issue, "id"))
+        if not (current and number.isdigit()):
+            raise Failed(f"{key}: HTTP 200: missing issue key or id\n{json.dumps(issue)}")
+        ids[current.upper()] = int(number)
+    return ids
+
+
+def in_sprint(sprint: int, ids: dict[str, int]) -> set[str]:
+    """Which of the issues a JQL search finds in the sprint, reconciled so it sees the change just made."""
+    answer = call("POST", "/rest/api/3/search/jql", {
+        "jql": f"sprint = {sprint} AND key in ({', '.join(ids)})", "fields": ["key"],
+        "maxResults": BATCH, "reconcileIssues": list(ids.values())})
+    issues = dig(answer, "issues")
+    if not isinstance(issues, list):
+        raise Failed(f"HTTP 200: missing issues array\n{json.dumps(answer)}")
+    return {text(dig(issue, "key")).upper() for issue in issues}
+
+
+def add(sprint: int, keys: list[str], dry_run: bool) -> None:
+    """Add the issues to the sprint, then check that they're in it."""
+    label = open_sprint(sprint)
+    ids = issue_ids(keys)
+    batches = [list(ids)[start:start + BATCH] for start in range(0, len(ids), BATCH)]
+    path = f"/rest/agile/1.0/sprint/{sprint}/issue"
+    for done, batch in enumerate(batches):
+        payload = {"issues": batch}
+        if dry_run:
+            print(json.dumps({"method": "POST", "endpoint": BASE + path, "payload": payload}, indent=2,
+                             ensure_ascii=False))
+            continue
+        try:
+            call("POST", path, payload, expect="204")
+        except Failed as error:
+            added = [key for earlier in batches[:done] for key in earlier]
+            raise Failed(f"adding {', '.join(batch)} to {label}: {error}"
+                         + (f"\nThe calls before it added {', '.join(added)}." if added else "")) from None
+    if dry_run:
+        return
+    found: set[str] = set()
+    for batch in batches:
+        found |= in_sprint(sprint, {key: ids[key] for key in batch})
+    if found & set(ids):
+        print(f"204  {label}  " + " ".join(f"+{key}" for key in ids if key in found), flush=True)
+    missing = [key for key in ids if key not in found]
+    if missing:
+        raise Failed(f"Jira answered 204, but a search doesn't find {', '.join(missing)} in {label}")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("sprint", type=int, metavar="SPRINT", help="the sprint's id, as jira-sprints lists it")
+    ap.add_argument("keys", nargs="+", type=issue_key, metavar="KEY", help="Jira key, e.g. ABC-123")
+    ap.add_argument("--dry-run", action="store_true", help="make the reads, then print the POST without sending it")
+    args = ap.parse_args()
+    if not BASE:
+        sys.exit("jira-sprint-add: set JIRA_BASE_URL in the environment or in ~/.config/jira/env")
+    if args.sprint < 1:
+        ap.error("the sprint's id is a positive number")
+    try:
+        add(args.sprint, list(dict.fromkeys(args.keys)), args.dry_run)
+    except Failed as error:
+        sys.exit(str(error))
+
+
+if __name__ == "__main__":
+    main()
