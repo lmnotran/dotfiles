@@ -28,7 +28,8 @@ branch protection is what's open (a check, the approval, or a blocked merge).
 With --admin, gh merges right away and skips the merge queue.
 
 After merging, it prints the unchecked items under "## Follow-ups" in
-~/notes/<KEY>.md, where <KEY> is the Jira key at the end of the PR title.
+~/notes/<KEY>.md, where <KEY> is the Jira key at the end of the PR title. A
+title that ends in a GitHub issue like (#123) reads ~/notes/<repo>-123.md.
 """
 import argparse
 import json
@@ -46,7 +47,9 @@ _PR_URL_RE: Final = re.compile(r"^https://github\.com/[^/\s]+/[^/\s]+/pull/\d+/?
 _OPEN_BOX_RE: Final = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+\[ \]\s+(.+?)\s*$")
 _HEADING_RE: Final = re.compile(r"^#{1,6}\s+(.*?)\s*$")
 _KEY_RE: Final = re.compile(r"\(([A-Z][A-Z0-9]+-\d+)\)\s*$")
-_PR_FIELDS: Final = "number,title,body,state,isDraft,mergeable,mergeStateStatus,reviewDecision,id,baseRefName"
+_ISSUE_RE: Final = re.compile(r"\(#(\d+)\)\s*$")
+_REPO_RE: Final = re.compile(r"^https://github\.com/[^/]+/([^/]+)/pull/")
+_PR_FIELDS: Final = "number,title,body,state,isDraft,mergeable,mergeStateStatus,reviewDecision,id,baseRefName,url"
 _QUEUE_QUERY: Final = """query($id: ID!, $branch: String!) {
   node(id: $id) { ... on PullRequest { isInMergeQueue repository { mergeQueue(branch: $branch) { id } } } }
 }"""
@@ -71,6 +74,7 @@ class PullRequest:
     review_decision: str
     node_id: str
     base: str
+    url: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,7 +105,7 @@ def fetch_pr(ref: int | str) -> PullRequest:
     raw = json.loads(subprocess.check_output(["gh", "pr", "view", str(ref), "--json", _PR_FIELDS], text=True))
     return PullRequest(raw["number"], raw["title"], raw["body"], raw["state"], raw["isDraft"],
                        raw["mergeable"], raw["mergeStateStatus"], raw["reviewDecision"] or "",
-                       raw["id"], raw["baseRefName"])
+                       raw["id"], raw["baseRefName"], raw["url"])
 
 
 def merge_queue(pr: PullRequest) -> MergeQueue:
@@ -158,10 +162,18 @@ def assess(pr: PullRequest, checks: list[tuple[str, str]]) -> Gaps:
     return Gaps(tuple(stops), tuple(protection), tuple(boxes))
 
 
-def open_follow_ups(title: str) -> tuple[Path, list[str]] | None:
-    """The ticket's notes file and its unchecked Follow-ups, from the Jira key ending the PR title."""
-    key = _KEY_RE.search(title)
-    path = Path.home() / "notes" / f"{key.group(1)}.md" if key else None
+def notes_name(pr: PullRequest) -> str | None:
+    """The notes file's name: the Jira key ending the PR title, or <repo>-<N> for a GitHub issue like (#123)."""
+    if key := _KEY_RE.search(pr.title):
+        return key.group(1)
+    issue, repo = _ISSUE_RE.search(pr.title), _REPO_RE.match(pr.url)
+    return f"{repo.group(1)}-{issue.group(1)}" if issue and repo else None
+
+
+def open_follow_ups(pr: PullRequest) -> tuple[Path, list[str]] | None:
+    """The ticket's notes file and its unchecked Follow-ups."""
+    name = notes_name(pr)
+    path = Path.home() / "notes" / f"{name}.md" if name else None
     if path is None or not path.is_file():
         return None
     return path, [item for section, item in unchecked_items(path.read_text()) if section.lower() == "follow-ups"]
@@ -192,7 +204,7 @@ def finish(pr: PullRequest, ref: int | str, queued: bool, wait: bool) -> int:
             return 1
         print(f"Merged PR #{pr.number}.")
         queued = False
-    follow_ups = open_follow_ups(pr.title)
+    follow_ups = open_follow_ups(pr)
     if follow_ups and follow_ups[1]:
         print(f"Open follow-ups in {follow_ups[0]}" + (", for after it merges:" if queued else ":"))
         print("\n".join(f"- [ ] {item}" for item in follow_ups[1]))

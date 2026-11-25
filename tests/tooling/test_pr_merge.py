@@ -27,7 +27,7 @@ def stub(merge: ModuleType, monkeypatch: pytest.MonkeyPatch, checks: tuple | lis
          queue: tuple[bool, bool] = (False, False), stdout: str = "", **changes: object) -> Mock:
     fields = {"number": 17, "title": TITLE, "body": "## Test plan\n\n- [x] Done\n", "state": "OPEN",
               "is_draft": False, "mergeable": "MERGEABLE", "merge_state": "CLEAN", "review_decision": "APPROVED",
-              "node_id": "PR_kwDO17", "base": "main"}
+              "node_id": "PR_kwDO17", "base": "main", "url": "https://github.com/OWNER/REPO/pull/17"}
     monkeypatch.setattr(merge, "fetch_pr", Mock(return_value=merge.PullRequest(**{**fields, **changes})))
     monkeypatch.setattr(merge, "required_checks", Mock(return_value=list(checks)))
     monkeypatch.setattr(merge, "merge_queue", Mock(return_value=merge.MergeQueue(*queue)))
@@ -114,6 +114,33 @@ def test_prints_open_follow_ups_from_the_ticket_notes_after_merging(merge: Modul
     # Then
     out = capsys.readouterr().out
     assert "- [ ] Next master run deploys docs" in out and "Not a follow-up" not in out
+
+
+def test_finds_a_github_issues_notes_by_repo_and_number(merge: ModuleType, monkeypatch: pytest.MonkeyPatch,
+                                                         capsys: pytest.CaptureFixture[str]) -> None:
+    # Given
+    notes = Path.home() / "notes"
+    notes.mkdir()
+    (notes / "REPO-12.md").write_text("## Follow-ups\n\n- [ ] After the next redeploy, check the page\n")
+    stub(merge, monkeypatch, title="fix: Refuse the wrong checkout (#12)")
+    # When
+    merge.main(["17"])
+    # Then
+    out = capsys.readouterr().out
+    assert f"Open follow-ups in {notes / 'REPO-12.md'}:" in out
+    assert "- [ ] After the next redeploy, check the page" in out
+
+
+@pytest.mark.parametrize(("title", "expected"), [
+    ("CI_CD: Fix the cache key (ABC-1234)", "ABC-1234"),
+    ("fix: Refuse the wrong checkout (#12)", "REPO-12"),
+    ("fix: Refuse the wrong checkout (#12) for now", None),
+    ("docs: Say why", None),
+])
+def test_notes_name_reads_the_title_and_the_pr_url(merge: ModuleType, title: str, expected: str | None) -> None:
+    pr = merge.PullRequest(17, title, "", "OPEN", False, "MERGEABLE", "CLEAN", "APPROVED", "PR_kwDO17", "main",
+                           "https://github.com/OWNER/REPO/pull/17")
+    assert merge.notes_name(pr) == expected
 
 
 def test_unchecked_items_skip_fenced_code_and_track_sections(merge: ModuleType) -> None:
@@ -214,7 +241,8 @@ def test_admin_override_merges_directly_instead_of_queueing(merge: ModuleType,
 def test_merge_queue_reads_the_graphql_answer(merge: ModuleType, monkeypatch: pytest.MonkeyPatch, node: dict,
                                               expected: tuple[bool, bool]) -> None:
     # Given
-    pr = merge.PullRequest(17, TITLE, "", "OPEN", False, "MERGEABLE", "CLEAN", "APPROVED", "PR_kwDO17", "main")
+    pr = merge.PullRequest(17, TITLE, "", "OPEN", False, "MERGEABLE", "CLEAN", "APPROVED", "PR_kwDO17", "main",
+                           "https://github.com/OWNER/REPO/pull/17")
     check_output = Mock(return_value=json.dumps({"data": {"node": node}}))
     monkeypatch.setattr(subprocess, "check_output", check_output)
     # When
