@@ -53,6 +53,7 @@ agents, or edits a user's repo.
 | [`jira-put-description`](test_jira_description.py) | Input validation, prose checks, dry runs, payloads, and API failures. |
 | [`jira-comment`](test_jira_comment.py) | Create and edit payloads, comment IDs, prose checks, dry runs, and API failures. |
 | [`jira-create`](test_jira_create.py) | Defaults from config, the default component and which projects get it, overrides, missing settings, prose checks, dry runs, and response validation. |
+| [`jira-move`](test_jira_move.py) | The transition picked by its target status, the status read back, issues already there, and the statuses an issue can reach. Dry runs, failed keys that don't stop the rest, API failures, usage errors, and a missing site. |
 | [`jira-search`](test_jira_search.py) | Query encoding, pagination, result limits, output formats, API failures, and a missing site. |
 | [`jira-sprints`](test_jira_sprints.py) | Pagination, keeping only the board's own sprints, state filters, output formats, API failures, usage errors, and a missing site. |
 | [`jira-view`](test_jira_view.py) | ADF rendering, missing descriptions, raw output, and API errors. Markdown output that round-trips through md2adf, panels included, and the parts it names as lost. |

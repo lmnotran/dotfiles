@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+"""jira-move — move Jira issues to a status, and read the status back.
+
+Usage:
+    jira-move KEY... --to STATUS [--dry-run]
+
+For each issue, this picks the transition whose target status is STATUS
+(ignoring case), sends it, and reads the status back. It prints
+`204  KEY  <old> -> <new>` for each issue it moved, and
+`skip  KEY  already <status>` for one that's already in STATUS. When no
+transition goes to STATUS, it names the statuses the issue can move to.
+A status read back that isn't STATUS is a failure.
+--dry-run makes the same reads, then prints the POST it would send.
+It keeps going after an issue fails, and exits 1 when any did.
+Auth via ~/.netrc (`machine <your-site>.atlassian.net`); uses `curl -n`.
+The site comes from JIRA_BASE_URL, in the environment or ~/.config/jira/env.
+"""
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import Final
+
+
+def jira_config(name: str, default: str = "") -> str:
+    """A setting from the environment, else from ~/.config/jira/env (KEY=value lines)."""
+    if os.environ.get(name):
+        return os.environ[name]
+    path = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "jira" / "env"
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return default
+    for line in lines:
+        key, sep, value = line.strip().partition("=")
+        if sep and key.strip() == name:
+            return value.strip().strip("\"'")
+    return default
+
+
+BASE: Final = jira_config("JIRA_BASE_URL").rstrip("/")
+ISSUE_KEY: Final = re.compile(r"[A-Z][A-Z0-9_]*-[1-9][0-9]*")
+
+
+class Failed(Exception):
+    """One issue's move went wrong. The message says how."""
+
+
+def issue_key(value: str) -> str:
+    """An issue key like ABC-123, in capitals."""
+    key = value.strip().upper()
+    if not ISSUE_KEY.fullmatch(key):
+        raise argparse.ArgumentTypeError(f"not an issue key like ABC-123: {value!r}")
+    return key
+
+
+def dig(value: object, *names: str) -> object:
+    """value[name][name]..., or None where a step isn't a dict or lacks the name."""
+    for name in names:
+        value = value.get(name) if isinstance(value, dict) else None
+    return value
+
+
+def text(value: object) -> str:
+    """The value when it's a string, else an empty one."""
+    return value if isinstance(value, str) else ""
+
+
+def call(method: str, path: str, payload: dict | None = None, expect: str = "200") -> object:
+    """Jira's JSON answer to one request, or None when the answer has no body."""
+    command = ["curl", "-n", "-sS", "--connect-timeout", "10", "--max-time", "60",
+               "-X", method, "-H", "Accept: application/json", "-w", "\n%{http_code}"]
+    if payload is not None:
+        command += ["-H", "Content-Type: application/json", "--data-binary", "@-"]
+    out = subprocess.run([*command, BASE + path], input=None if payload is None else json.dumps(payload),
+                         capture_output=True, text=True)
+    if out.returncode:
+        raise Failed(f"curl failed ({out.returncode}): {out.stderr}")
+    body, _, code = out.stdout.rpartition("\n")
+    if code != expect:
+        raise Failed(f"HTTP {code}\n{body}")
+    if not body.strip():
+        return None
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError:
+        raise Failed(f"HTTP {code}: non-JSON response\n{body}") from None
+
+
+def status(key: str) -> str:
+    """The issue's status, read from the issue."""
+    issue = call("GET", f"/rest/api/3/issue/{key}?fields=status")
+    name = text(dig(issue, "fields", "status", "name"))
+    if not name:
+        raise Failed(f"HTTP 200: missing status\n{json.dumps(issue)}")
+    return name
+
+
+def transitions(key: str) -> list[dict]:
+    """The transitions Jira offers the issue now."""
+    answer = call("GET", f"/rest/api/3/issue/{key}/transitions")
+    found = dig(answer, "transitions")
+    if not isinstance(found, list):
+        raise Failed(f"HTTP 200: missing transitions array\n{json.dumps(answer)}")
+    return [transition for transition in found if isinstance(transition, dict)]
+
+
+def move(key: str, target: str, dry_run: bool) -> None:
+    """Move one issue to the target status, and print how it went."""
+    old = status(key)
+    if old.casefold() == target.casefold():
+        print(f"skip  {key}  already {old}", flush=True)
+        return
+    offered = transitions(key)
+    reaching = [option for option in offered if text(dig(option, "to", "name")).casefold() == target.casefold()]
+    if not reaching:
+        names = [name for name in dict.fromkeys(text(dig(option, "to", "name")) for option in offered) if name]
+        raise Failed(f"no transition goes from {old} to {target}. "
+                     + (f"It can move to {', '.join(names)}." if names else "Jira offers it no transitions."))
+    # Two transitions can end in the same status. Prefer the one named after it.
+    chosen = next((option for option in reaching if text(option.get("name")).casefold() == target.casefold()),
+                  reaching[0])
+    if not text(chosen.get("id")):
+        raise Failed(f"HTTP 200: the transition to {target} has no id\n{json.dumps(chosen)}")
+    path = f"/rest/api/3/issue/{key}/transitions"
+    payload = {"transition": {"id": chosen["id"]}}
+    if dry_run:
+        print(json.dumps({"method": "POST", "endpoint": BASE + path, "payload": payload}, indent=2, ensure_ascii=False),
+              flush=True)
+        return
+    call("POST", path, payload, expect="204")
+    new = status(key)
+    if new.casefold() != target.casefold():
+        raise Failed(f"Jira answered 204, but the status reads {new}, not {target}")
+    print(f"204  {key}  {old} -> {new}", flush=True)
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("keys", nargs="+", type=issue_key, metavar="KEY", help="Jira key, e.g. ABC-123")
+    ap.add_argument("--to", required=True, metavar="STATUS", help="the status to move to, e.g. 'In Progress'")
+    ap.add_argument("--dry-run", action="store_true", help="make the reads, then print the POST without sending it")
+    args = ap.parse_args()
+    if not BASE:
+        sys.exit("jira-move: set JIRA_BASE_URL in the environment or in ~/.config/jira/env")
+    target = args.to.strip()
+    if not target:
+        ap.error("--to needs a status")
+    failed = False
+    for key in dict.fromkeys(args.keys):
+        try:
+            move(key, target, args.dry_run)
+        except Failed as error:
+            print(f"{key}: {error}", file=sys.stderr, flush=True)
+            failed = True
+    if failed:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
