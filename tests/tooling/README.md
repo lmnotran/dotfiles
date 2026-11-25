@@ -64,6 +64,7 @@ agents, or edits a user's repo.
 | [`sandbox`](test_sandbox.py) | Real CLI help, unknown commands, and errors outside a repo. |
 | [`git-merge-check`](test_git_merge_check.py) | The real CLI in a throwaway repo: the command runs on the merge and its status comes back, conflicts, the default base and branch, `--keep`, skipped checkout hooks, cleanup, and usage errors. |
 | [`oc-session-purge`](test_session_purge.py) | Session selection, ID validation, dry runs, file removal, and database failures. |
+| [`oc-session-pending`](test_session_pending.py) | Running tool calls: a card's title and the choices in its openui-lang, an HTML card's text, questions, and other tools' input on one line. Queued messages in order, the note about cards, JSON output, the read-only database and its default path, unknown sessions, and missing tables. |
 | [`chamberctl`](test_chamberctl.py) | Real CLI help and unknown commands. Systemd calls aren't tested. |
 
 The linked test files list the individual cases.

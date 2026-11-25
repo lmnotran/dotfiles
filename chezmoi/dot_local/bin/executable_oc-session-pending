@@ -1,0 +1,397 @@
+#!/usr/bin/env python3
+"""oc-session-pending — show what an OpenCode session is waiting on.
+
+Usage:
+    oc-session-pending SESSION_ID [--db PATH] [--json]
+
+It reads OpenCode's database, read-only, and prints a count, then a line for:
+
+- each tool call still running: `running  <tool>  <title or input>`. A page
+  that waits on an answer (openchamber_render with awaitAnswer) adds its
+  choices below, or the text of an HTML page, and a question adds each
+  question and its options. Any other tool shows its input on one line, like
+  a shell command.
+- each message queued for the session and not given to it yet:
+  `queued   <time>  <delivery>  <first line>`, where delivery is steer or
+  queue. A message queued behind a card waits until the card is answered.
+
+With nothing pending it prints `<id>: nothing pending`. It exits 1 when the
+session isn't in the database, and 2 when the database or a table it reads is
+missing (another OpenCode version). --json prints the same as JSON.
+The database is $XDG_DATA_HOME/opencode/opencode.db, else
+~/.local/share/opencode/opencode.db.
+"""
+import argparse
+import json
+import os
+import re
+import sqlite3
+import sys
+from contextlib import closing
+from dataclasses import dataclass
+from datetime import datetime
+from html.parser import HTMLParser
+from pathlib import Path
+from typing import Final, NoReturn
+from urllib.parse import quote
+
+SESSION_ID: Final = re.compile(r"ses_[A-Za-z0-9]{26}")
+TABLES: Final = ("session_v2", "session_part", "session_inbox")
+NOTE: Final = "A message queued behind a card waits until the card is answered."
+# How long a tool's one-line summary, and a page's text or program, may get.
+SHORT: Final = 160
+LONG: Final = 400
+# The input fields that say best what a tool call does, in the order to try them.
+SUMMARY_FIELDS: Final = ("command", "description", "filePath", "path", "url", "query", "pattern", "prompt", "code")
+HIDDEN_TAGS: Final = frozenset({"script", "style", "title", "template", "noscript"})
+ESCAPES: Final = {"n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f"}
+TOKEN: Final = re.compile(r'\s*(?:(?P<string>"(?:[^"\\]|\\.)*")|(?P<number>-?\d+(?:\.\d+)?)'
+                          r'|(?P<name>[A-Za-z_]\w*)|(?P<mark>[=()\[\]{}:,]))', re.DOTALL)
+REST_IS_BLANK: Final = re.compile(r"\s*\Z")
+
+
+def session_id(value: str) -> str:
+    if not SESSION_ID.fullmatch(value):
+        raise argparse.ArgumentTypeError(f"not an OpenCode session ID (ses_ and 26 letters or digits): {value!r}")
+    return value
+
+
+def fail(message: str, code: int = 2) -> NoReturn:
+    print(f"oc-session-pending: {message}", file=sys.stderr)
+    sys.exit(code)
+
+
+def dig(value: object, *names: str) -> object:
+    """value[name][name]..., or None where a step isn't a dict or lacks the name."""
+    for name in names:
+        value = value.get(name) if isinstance(value, dict) else None
+    return value
+
+
+def text(value: object) -> str:
+    """The value when it's a string, else an empty one."""
+    return value if isinstance(value, str) else ""
+
+
+def shorten(value: str, limit: int) -> str:
+    """The value on one line, cut to LIMIT characters."""
+    flat = " ".join(value.split())
+    return flat if len(flat) <= limit else flat[:limit - 1].rstrip() + "…"
+
+
+@dataclass
+class Call:
+    """A component in an openui-lang program, like Choice(...)."""
+    component: str
+    args: list[object]
+
+
+@dataclass
+class Ref:
+    """A name that stands for another statement's value."""
+    name: str
+
+
+def unescape(body: str) -> str:
+    """A string literal's text, without its quotes."""
+    try:
+        return json.loads(f'"{body}"', strict=False)
+    except ValueError:
+        return re.sub(r"\\(.)", lambda escape: ESCAPES.get(escape[1], escape[1]), body, flags=re.DOTALL)
+
+
+class Program:
+    """Reads openui-lang, OpenChamber's UI language: `name = Component(args)` statements."""
+
+    def __init__(self, source: str) -> None:
+        self.tokens: list[tuple[str, str]] = []
+        self.at = 0
+        start = 0
+        while not REST_IS_BLANK.match(source, start):
+            match = TOKEN.match(source, start)
+            if not match or not match.lastgroup:
+                raise ValueError(f"unexpected {source[start:start + 20].strip()!r}")
+            self.tokens.append((match.lastgroup, match[match.lastgroup]))
+            start = match.end()
+
+    def statements(self) -> dict[str, object]:
+        found: dict[str, object] = {}
+        while self.at < len(self.tokens):
+            kind, name = self.take()
+            if kind != "name":
+                raise ValueError(f"a statement starts with {name!r}")
+            self.take("=")
+            found[name] = self.value()
+        return found
+
+    def peek(self) -> tuple[str, str]:
+        return self.tokens[self.at] if self.at < len(self.tokens) else ("end", "")
+
+    def take(self, mark: str = "") -> tuple[str, str]:
+        token = self.peek()
+        if token[0] == "end" or (mark and token != ("mark", mark)):
+            raise ValueError(f"expected {mark or 'a value'}, found {token[1] or 'the end'}")
+        self.at += 1
+        return token
+
+    def value(self) -> object:
+        kind, token = self.take()
+        if kind == "string":
+            return unescape(token[1:-1])
+        if kind == "number":
+            return float(token) if "." in token else int(token)
+        if kind == "name":
+            if token in ("true", "false", "null"):
+                return {"true": True, "false": False, "null": None}[token]
+            if self.peek() == ("mark", "("):
+                self.take("(")
+                return Call(token, self.items(")"))
+            return Ref(token)
+        if token == "[":
+            return self.items("]")
+        if token == "{":
+            fields: dict[str, object] = {}
+            while self.peek() != ("mark", "}"):
+                kind, key = self.take()
+                if kind not in ("name", "string"):
+                    raise ValueError(f"an object key can't be {key!r}")
+                self.take(":")
+                fields[unescape(key[1:-1]) if kind == "string" else key] = self.value()
+                if self.peek() != ("mark", "}"):
+                    self.take(",")
+            self.take("}")
+            return fields
+        raise ValueError(f"unexpected {token!r}")
+
+    def items(self, close: str) -> list[object]:
+        found: list[object] = []
+        while self.peek() != ("mark", close):
+            found.append(self.value())
+            if self.peek() != ("mark", close):
+                self.take(",")
+        self.take(close)
+        return found
+
+
+def option(value: object) -> dict[str, str]:
+    """A choice's option, as {label, description}."""
+    if isinstance(value, dict):
+        found = {"label": text(value.get("label"))}
+        if text(value.get("description")):
+            found["description"] = text(value.get("description"))
+        return found
+    return {"label": value if isinstance(value, str) else json.dumps(value)}
+
+
+def choices(ui: str) -> list[dict]:
+    """Each Choice in an openui-lang program: its question, whether it takes more than one, and its options."""
+    try:
+        statements = Program(ui).statements()
+    except ValueError:
+        return []
+    found: list[dict] = []
+
+    def visit(value: object) -> None:
+        if isinstance(value, Call):
+            if value.component == "Choice":
+                name, given, question, multiple = (value.args + [None] * 4)[:4]
+                found.append({"question": text(question) or text(name), "multiple": multiple is True,
+                              "options": [option(item) for item in given] if isinstance(given, list) else []})
+            for arg in value.args:
+                visit(arg)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+        elif isinstance(value, dict):
+            for item in value.values():
+                visit(item)
+
+    for value in statements.values():
+        visit(value)
+    return found
+
+
+class VisibleText(HTMLParser):
+    """Collects the text a browser would show for an HTML page."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.hidden = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in HIDDEN_TAGS:
+            self.hidden += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in HIDDEN_TAGS and self.hidden:
+            self.hidden -= 1
+
+    def handle_data(self, data: str) -> None:
+        if not self.hidden:
+            self.parts.append(data)
+
+
+def visible_text(markup: str) -> str:
+    reader = VisibleText()
+    reader.feed(markup)
+    reader.close()
+    return " ".join(reader.parts)
+
+
+def page_fields(given: object) -> dict:
+    """A render call's input with its parameters lifted up, as OpenChamber reads it."""
+    if not isinstance(given, dict):
+        return {}
+    nested = given.get("parameters")
+    if isinstance(nested, str):
+        try:
+            nested = json.loads(nested)
+        except ValueError:
+            nested = None
+    return {**given, **nested} if isinstance(nested, dict) else dict(given)
+
+
+def asked(given: object) -> list[dict]:
+    """The question tool's questions, each with its header and options."""
+    found: list[dict] = []
+    questions = dig(given, "questions")
+    for item in questions if isinstance(questions, list) else []:
+        options = dig(item, "options")
+        question: dict[str, object] = {"question": text(dig(item, "question")) or text(dig(item, "header")),
+                                       "multiple": dig(item, "multiple") is True,
+                                       "options": [option(entry) for entry in options] if isinstance(options, list) else []}
+        if text(dig(item, "header")):
+            question["header"] = text(dig(item, "header"))
+        found.append(question)
+    return found
+
+
+def summary(given: object) -> str:
+    """A tool call's input on one line."""
+    for field in SUMMARY_FIELDS:
+        if text(dig(given, field)).strip():
+            return shorten(text(dig(given, field)), SHORT)
+    return shorten(json.dumps(given, ensure_ascii=False), SHORT) if given else ""
+
+
+def describe(tool: str, given: object) -> dict:
+    """What a running tool call shows the user, or what it runs."""
+    entry: dict[str, object] = {"tool": tool, "card": False}
+    page = page_fields(given) if tool == "openchamber_render" else {}
+    if page.get("awaitAnswer") in (True, "true"):
+        entry.update(card=True, title=text(page.get("title")))
+        if text(page.get("ui")):
+            questions = choices(page["ui"])
+            if questions:
+                entry["questions"] = questions
+            else:
+                entry["text"] = shorten(page["ui"], LONG)
+        elif text(page.get("html")):
+            entry["text"] = shorten(visible_text(page["html"]), LONG)
+        return entry
+    questions = asked(given) if tool == "question" else []
+    if questions:
+        headers = [text(question.get("header")) for question in questions]
+        entry.update(card=True, title=" / ".join(header for header in headers if header), questions=questions)
+        return entry
+    entry["summary"] = summary(given)
+    return entry
+
+
+def connect(path: Path) -> sqlite3.Connection:
+    """OpenCode's database, opened read-only, once it has the tables this reads."""
+    if not path.is_file():
+        fail(f"no OpenCode database at {path}")
+    db = sqlite3.connect(f"file:{quote(str(path))}?mode=ro", uri=True)
+    db.execute("PRAGMA busy_timeout = 5000")
+    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    for table in TABLES:
+        if table not in tables:
+            db.close()
+            fail(f"{path} has no {table} table. Is it from another OpenCode version?")
+    return db
+
+
+def when(stamp: object) -> str:
+    """A time in milliseconds since the epoch, as local time."""
+    if not isinstance(stamp, int | float):
+        return "?"
+    return datetime.fromtimestamp(stamp / 1000).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def pending(db: sqlite3.Connection, session: str) -> tuple[list[dict], list[dict]]:
+    """The session's running tool calls and queued messages, oldest first."""
+    running: list[dict] = []
+    for (data,) in db.execute("SELECT data FROM session_part WHERE session_id = ? AND type = 'tool' "
+                              "AND data LIKE '%\"running\"%' ORDER BY time_created, message_id, ordinal", (session,)):
+        try:
+            part = json.loads(data)
+        except (TypeError, ValueError):
+            continue
+        if dig(part, "state", "status") == "running":
+            running.append(describe(text(dig(part, "name")) or "?", dig(part, "state", "input")))
+    queued: list[dict] = []
+    for kind, payload, delivery, created in db.execute(
+            "SELECT type, payload, delivery, time_created FROM session_inbox WHERE session_id = ? "
+            "ORDER BY enqueued_seq", (session,)):
+        try:
+            body = json.loads(payload)
+        except (TypeError, ValueError):
+            body = None
+        lines = text(dig(body, "text")).strip().splitlines()
+        queued.append({"queued": when(created), "delivery": text(delivery), "type": text(kind),
+                       "text": lines[0].strip() if lines else ""})
+    return running, queued
+
+
+def show(session: str, running: list[dict], queued: list[dict], note: str) -> None:
+    if not running and not queued:
+        print(f"{session}: nothing pending")
+        return
+    counts = [f"{len(running)} tool call{'s' * (len(running) != 1)} running"] if running else []
+    counts += [f"{len(queued)} message{'s' * (len(queued) != 1)} queued"] if queued else []
+    print(f"{session}: {', '.join(counts)}")
+    for entry in running:
+        print(f"running  {entry['tool']}  {entry.get('title') or entry.get('summary', '')}".rstrip())
+        for question in entry.get("questions", []):
+            print(f"    {question['question']}{' (one or more)' if question['multiple'] else ''}")
+            for item in question["options"]:
+                print(f"      - {item['label']}" + (f": {item['description']}" if item.get("description") else ""))
+        if entry.get("text"):
+            print(f"    {entry['text']}")
+    for message in queued:
+        print(f"queued   {message['queued']}  {message['delivery']}  {message['text'] or '(' + message['type'] + ')'}")
+    if note:
+        print(note)
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("session", type=session_id, metavar="SESSION_ID", help="the session, like ses_ and 26 letters or digits")
+    ap.add_argument("--db", type=Path, metavar="PATH",
+                    help="OpenCode's database (default: $XDG_DATA_HOME/opencode/opencode.db, "
+                         "else ~/.local/share/opencode/opencode.db)")
+    ap.add_argument("--json", action="store_true", help="print the same as JSON")
+    args = ap.parse_args(argv)
+    path = args.db or Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "opencode/opencode.db"
+    try:
+        with closing(connect(path)) as db:
+            if db.execute("SELECT 1 FROM session_v2 WHERE id = ?", (args.session,)).fetchone() is None:
+                fail(f"no session {args.session} in {path}", 1)
+            running, queued = pending(db, args.session)
+    except sqlite3.Error as error:
+        fail(f"can't read {path}: {error}")
+    note = NOTE if queued and any(entry["card"] for entry in running) else ""
+    if args.json:
+        found: dict[str, object] = {"session": args.session, "running": running, "queued": queued}
+        if note:
+            found["note"] = note
+        print(json.dumps(found, indent=2, ensure_ascii=False))
+    else:
+        show(args.session, running, queued, note)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
