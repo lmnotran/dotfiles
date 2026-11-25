@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+"""jira-link — link two Jira issues, and check the link reads the right way.
+
+Usage:
+    jira-link FROM TYPE TO [--dry-run]
+
+The link reads "FROM <TYPE's outward phrase> TO", so `jira-link ABC-1 Blocks
+ABC-2` means ABC-1 blocks ABC-2. TYPE is a link type's name or its outward
+phrase, ignoring case, like Blocks or "relates to". An unknown TYPE lists the
+link types with their outward and inward phrases.
+It skips a link that already exists. Otherwise it creates the link, reads both
+issues' links back, and prints how the new one reads from each side:
+`201  ABC-1 blocks ABC-2 | ABC-2 is blocked by ABC-1`. It exits 1 when the link
+is missing or reads the other way round.
+--dry-run makes the same reads, then prints the POST it would send.
+Auth via ~/.netrc (`machine <your-site>.atlassian.net`); uses `curl -n`.
+The site comes from JIRA_BASE_URL, in the environment or ~/.config/jira/env.
+"""
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import Final
+
+
+def jira_config(name: str, default: str = "") -> str:
+    """A setting from the environment, else from ~/.config/jira/env (KEY=value lines)."""
+    if os.environ.get(name):
+        return os.environ[name]
+    path = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "jira" / "env"
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return default
+    for line in lines:
+        key, sep, value = line.strip().partition("=")
+        if sep and key.strip() == name:
+            return value.strip().strip("\"'")
+    return default
+
+
+BASE: Final = jira_config("JIRA_BASE_URL").rstrip("/")
+ISSUE_KEY: Final = re.compile(r"[A-Z][A-Z0-9_]*-[1-9][0-9]*")
+TYPE_FIELDS: Final = ("id", "name", "inward", "outward")
+
+
+class Failed(Exception):
+    """A request Jira didn't answer as expected, or a link that came out wrong. The message says how."""
+
+
+def issue_key(value: str) -> str:
+    """An issue key like ABC-123, in capitals."""
+    key = value.strip().upper()
+    if not ISSUE_KEY.fullmatch(key):
+        raise argparse.ArgumentTypeError(f"not an issue key like ABC-123: {value!r}")
+    return key
+
+
+def dig(value: object, *names: str) -> object:
+    """value[name][name]..., or None where a step isn't a dict or lacks the name."""
+    for name in names:
+        value = value.get(name) if isinstance(value, dict) else None
+    return value
+
+
+def text(value: object) -> str:
+    """The value when it's a string, else an empty one."""
+    return value if isinstance(value, str) else ""
+
+
+def call(method: str, path: str, payload: dict | None = None, expect: str = "200") -> object:
+    """Jira's JSON answer to one request, or None when the answer has no body."""
+    command = ["curl", "-n", "-sS", "--connect-timeout", "10", "--max-time", "60",
+               "-X", method, "-H", "Accept: application/json", "-w", "\n%{http_code}"]
+    if payload is not None:
+        command += ["-H", "Content-Type: application/json", "--data-binary", "@-"]
+    out = subprocess.run([*command, BASE + path], input=None if payload is None else json.dumps(payload),
+                         capture_output=True, text=True)
+    if out.returncode:
+        raise Failed(f"curl failed ({out.returncode}): {out.stderr}")
+    body, _, code = out.stdout.rpartition("\n")
+    if code != expect:
+        raise Failed(f"HTTP {code}\n{body}")
+    if not body.strip():
+        return None
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError:
+        raise Failed(f"HTTP {code}: non-JSON response\n{body}") from None
+
+
+def link_type(wanted: str, source: str, target: str) -> dict[str, str]:
+    """The link type named WANTED, or whose outward phrase is WANTED, ignoring case."""
+    answer = call("GET", "/rest/api/3/issueLinkType")
+    found = dig(answer, "issueLinkTypes")
+    if not isinstance(found, list):
+        raise Failed(f"HTTP 200: missing issueLinkTypes array\n{json.dumps(answer)}")
+    types = [{field: text(kind.get(field)) for field in TYPE_FIELDS} for kind in found if isinstance(kind, dict)]
+    types = [kind for kind in types if kind["id"] and kind["name"]]
+    folded = " ".join(wanted.split()).casefold()
+    for field in ("name", "outward"):
+        for kind in types:
+            if kind[field].casefold() == folded:
+                return kind
+    listing = "".join(f"\n  {kind['name']}: {kind['outward']} / {kind['inward']}" for kind in types)
+    swap = next((f"\n{wanted!r} is {kind['name']} read from the other side: jira-link {target} {kind['name']!r} {source}"
+                 for kind in types if kind["inward"].casefold() == folded), "")
+    raise Failed(f"{wanted!r} isn't a link type's name or outward phrase. Jira's link types (name: outward / inward):"
+                 f"{listing}{swap}")
+
+
+def issue_links(key: str) -> tuple[str, list[dict]]:
+    """The issue's current key, and its links as Jira lists them on the issue."""
+    try:
+        issue = call("GET", f"/rest/api/3/issue/{key}?fields=issuelinks")
+    except Failed as error:
+        raise Failed(f"{key}: {error}") from None
+    links = dig(issue, "fields", "issuelinks")
+    if not isinstance(links, list):
+        raise Failed(f"{key}: HTTP 200: missing issuelinks\n{json.dumps(issue)}")
+    return text(dig(issue, "key")).upper() or key, [link for link in links if isinstance(link, dict)]
+
+
+def other_end(link: dict) -> str:
+    """The key of the issue at the link's other end, seen from the issue that lists it."""
+    return text(dig(link, "outwardIssue", "key") or dig(link, "inwardIssue", "key")).upper()
+
+
+def reads(link: dict, key: str) -> str:
+    """How the link reads from the side of KEY, the issue that lists it, like `ABC-1 blocks ABC-2`."""
+    phrase = text(dig(link, "type", "outward" if "outwardIssue" in link else "inward"))
+    return f"{key} {phrase} {other_end(link)}"
+
+
+def between(links: list[dict], kind: dict[str, str], target: str) -> list[dict]:
+    """The links of this type to the target issue."""
+    return [link for link in links if text(dig(link, "type", "id")) == kind["id"] and other_end(link) == target]
+
+
+def link(source: str, wanted: str, target: str, dry_run: bool) -> None:
+    """Link the issues so it reads "source <outward phrase> target", and print how it reads."""
+    kind = link_type(wanted, source, target)
+    source, before = issue_links(source)
+    target, _ = issue_links(target)
+    expected = f"{source} {kind['outward']} {target}"
+    # A link whose two phrases match, like "relates to", reads the same both ways round.
+    if any(reads(found, source).casefold() == expected.casefold() for found in between(before, kind, target)):
+        print(f"skip  {expected}  already linked")
+        return
+    path = "/rest/api/3/issueLink"
+    # Jira names the sides backwards: the inward issue is the one the outward phrase starts from.
+    payload = {"type": {"name": kind["name"]}, "inwardIssue": {"key": source}, "outwardIssue": {"key": target}}
+    if dry_run:
+        print(json.dumps({"method": "POST", "endpoint": BASE + path, "payload": payload}, indent=2, ensure_ascii=False))
+        return
+    call("POST", path, payload, expect="201")
+    known = {text(found.get("id")) for found in before}
+    _, after = issue_links(source)
+    new = [found for found in between(after, kind, target) if text(found.get("id")) not in known]
+    if not new:
+        raise Failed(f"Jira answered 201, but {source} has no new {kind['name']} link to {target}")
+    number = text(new[0].get("id"))
+    _, mirrored = issue_links(target)
+    mirror = next((found for found in mirrored if text(found.get("id")) == number), None)
+    if mirror is None:
+        raise Failed(f"Jira answered 201, but {target}'s links don't show link {number} from {source}")
+    sides = f"{reads(new[0], source)} | {reads(mirror, target)}"
+    if reads(new[0], source).casefold() != expected.casefold():
+        raise Failed(f"Jira made link {number} the other way round: {sides}")
+    print(f"201  {sides}")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("source", type=issue_key, metavar="FROM", help="the issue the link reads from, e.g. ABC-1")
+    ap.add_argument("type", metavar="TYPE", help="a link type's name or outward phrase, e.g. Blocks or 'relates to'")
+    ap.add_argument("target", type=issue_key, metavar="TO", help="the issue the link reads to, e.g. ABC-2")
+    ap.add_argument("--dry-run", action="store_true", help="make the reads, then print the POST without sending it")
+    args = ap.parse_args()
+    if not BASE:
+        sys.exit("jira-link: set JIRA_BASE_URL in the environment or in ~/.config/jira/env")
+    if args.source == args.target:
+        ap.error("FROM and TO are the same issue")
+    if not args.type.strip():
+        ap.error("TYPE needs a link type's name or outward phrase")
+    try:
+        link(args.source, args.type, args.target, args.dry_run)
+    except Failed as error:
+        sys.exit(str(error))
+
+
+if __name__ == "__main__":
+    main()
