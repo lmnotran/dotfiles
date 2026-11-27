@@ -11,10 +11,9 @@ LIST is a pin list's name as the sidebar shows it, in any case, or Pinned for
 the plain Pinned section. The session is $OPENCODE_SESSION_ID, which OpenCode
 sets in every session's shell, unless --session names another.
 
-Only the pin changes. The row menu's Pin to also marks the session done, like
-the Done button, and that stays the user's call. A pinned session shows in
-its pin section instead of In work, and goes back to In work when it's
-unpinned, if it was there.
+Only the pin changes here, but OpenChamber's sidebar then marks the session
+done, as the row menu's Pin to does, unless the Pinned section's Also in work
+is on. So an unpinned session stays out of In work until its next message.
 
 OpenChamber's agent tool has no pin action, so this logs in to OpenChamber's
 API the way the openchamber CLI does: with the UI password from
