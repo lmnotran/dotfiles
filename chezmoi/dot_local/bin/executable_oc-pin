@@ -1,0 +1,265 @@
+#!/usr/bin/env python3
+"""oc-pin — pin an OpenChamber session to one of the sidebar's pin lists, or unpin it.
+
+Usage:
+    oc-pin LIST                  # pin this session to LIST
+    oc-pin --if-unpinned LIST    # the same, but leave a session that's pinned already
+    oc-pin --unpin [LIST]        # unpin it; with LIST, only when it's pinned there
+    oc-pin --lists               # print the pin lists' names
+
+LIST is a pin list's name as the sidebar shows it, in any case, or Pinned for
+the plain Pinned section. The session is $OPENCODE_SESSION_ID, which OpenCode
+sets in every session's shell, unless --session names another.
+
+Only the pin changes. The row menu's Pin to also marks the session done, like
+the Done button, and that stays the user's call. A pinned session shows in
+its pin section instead of In work, and goes back to In work when it's
+unpinned, if it was there.
+
+OpenChamber's agent tool has no pin action, so this logs in to OpenChamber's
+API the way the openchamber CLI does: with the UI password from
+$OPENCHAMBER_UI_PASSWORD, else from the running instance's run file. The
+address comes from $OPENCHAMBER_AGENT_TOOL_URL, else http://127.0.0.1:3000.
+
+Exit codes: 0 done or nothing to change, 1 an unknown list or OpenChamber
+refused, 2 usage errors.
+"""
+import argparse
+import http.client
+import json
+import os
+import re
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any, Final, NoReturn
+
+SESSION_ID: Final = re.compile(r"ses_[A-Za-z0-9]{26}")
+DEFAULT_URL: Final = "http://127.0.0.1:3000"
+# The plain Pinned section. A pin there has no list in the session's metadata.
+PINNED: Final = "pinned"
+PINNED_NAME: Final = "Pinned"
+# How often to try a write whose session metadata changed under it, as the sidebar does.
+ATTEMPTS: Final = 5
+TIMEOUT: Final = 15
+
+Metadata = dict[str, Any]
+
+
+class OpenChamberError(Exception):
+    pass
+
+
+def fail(message: str, code: int = 1) -> NoReturn:
+    print(f"oc-pin: {message}", file=sys.stderr)
+    sys.exit(code)
+
+
+def session_id(value: str) -> str:
+    if not SESSION_ID.fullmatch(value):
+        raise argparse.ArgumentTypeError(f"not an OpenCode session ID (ses_ and 26 letters or digits): {value!r}")
+    return value
+
+
+def now() -> int:
+    return int(time.time() * 1000)
+
+
+def base_url() -> str:
+    tool = urllib.parse.urlsplit(os.environ.get("OPENCHAMBER_AGENT_TOOL_URL", ""))
+    return f"{tool.scheme}://{tool.netloc}" if tool.scheme and tool.netloc else DEFAULT_URL
+
+
+def ui_password(url: str) -> str | None:
+    """The UI password from the environment, else from the run file of the instance on url's port."""
+    if password := os.environ.get("OPENCHAMBER_UI_PASSWORD"):
+        return password
+    port = urllib.parse.urlsplit(url).port
+    data_dir = Path(os.environ.get("OPENCHAMBER_DATA_DIR") or Path.home() / ".config/openchamber")
+    try:
+        run = json.loads((data_dir / f"run/openchamber-{port}.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    password = run.get("uiPassword") if isinstance(run, dict) else None
+    return password if isinstance(password, str) and password else None
+
+
+def reason(error: urllib.error.HTTPError) -> str:
+    text = error.read().decode("utf-8", "replace")
+    try:
+        found = json.loads(text)
+    except ValueError:
+        return text.strip()[:200] or str(error.reason)
+    message = found.get("error") if isinstance(found, dict) else None
+    return message if isinstance(message, str) else text.strip()[:200]
+
+
+class OpenChamber:
+    """OpenChamber's HTTP API, logged in with the UI password when there is one."""
+
+    def __init__(self, url: str, password: str | None) -> None:
+        self.url = url
+        self.cookie = ""
+        if password:
+            headers, _ = self.send("POST", "/auth/session", {"password": password})
+            self.cookie = "; ".join(cookie.split(";", 1)[0] for cookie in headers.get_all("Set-Cookie") or [])
+
+    def send(self, method: str, path: str, payload: object = None) -> tuple[http.client.HTTPMessage, Any]:
+        headers = {"Accept": "application/json"}
+        if self.cookie:
+            headers["Cookie"] = self.cookie
+        data = None
+        if payload is not None:
+            data = json.dumps(payload).encode()
+            headers["Content-Type"] = "application/json"
+        request = urllib.request.Request(self.url + path, data=data, method=method, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+                return response.headers, json.load(response)
+        except urllib.error.HTTPError as error:
+            raise OpenChamberError(f"{method} {path} answered {error.code}: {reason(error)}") from error
+        except (OSError, ValueError, http.client.HTTPException) as error:
+            raise OpenChamberError(f"can't reach OpenChamber at {self.url}: {error}") from error
+
+    def pin_lists(self) -> dict[str, str]:
+        """Each pin list's name by its ID, the plain Pinned section first."""
+        _, settings = self.send("GET", "/api/config/settings")
+        stored = settings.get("sidebarPinLists") if isinstance(settings, dict) else None
+        lists = {PINNED: PINNED_NAME}
+        for entry in stored if isinstance(stored, list) else []:
+            if isinstance(entry, dict) and isinstance(entry.get("id"), str) and isinstance(entry.get("name"), str):
+                lists[entry["id"]] = entry["name"]
+        return lists
+
+    def metadata(self, session: str) -> Metadata:
+        _, found = self.send("GET", f"/api/openchamber/sessions/{session}/metadata")
+        metadata = found.get("metadata") if isinstance(found, dict) else None
+        return metadata if isinstance(metadata, dict) else {}
+
+    def compare_and_set(self, session: str, expected: Metadata, patch: Metadata) -> tuple[Metadata, bool]:
+        """Apply patch unless the metadata is no longer expected. Returns the metadata now, and True when it wasn't."""
+        _, found = self.send("POST", f"/api/openchamber/sessions/{session}/metadata/compare-and-set",
+                             {"patch": patch, "expected": expected})
+        metadata = found.get("metadata") if isinstance(found, dict) else None
+        return (metadata if isinstance(metadata, dict) else {}), bool(isinstance(found, dict) and found.get("conflict"))
+
+
+def pin_of(metadata: Metadata) -> str | None:
+    """The list the session is pinned to, PINNED for the plain section, or None. Read as the sidebar reads it."""
+    namespace = metadata.get("openchamber")
+    pinned = namespace.get("pinned") if isinstance(namespace, dict) else None
+    if not isinstance(pinned, dict) or not isinstance(pinned.get("at"), (int, float)):
+        return None
+    if "list" not in pinned:
+        return PINNED
+    listed = pinned["list"]
+    return listed if isinstance(listed, str) and listed else None
+
+
+def with_pin(metadata: Metadata, target: str | None, at: int) -> Metadata:
+    """The metadata pinned to target, or unpinned for None. A pin that moves keeps the time it was made."""
+    namespace = metadata.get("openchamber")
+    rest = {key: value for key, value in namespace.items() if key != "pinned"} if isinstance(namespace, dict) else {}
+    if target is None:
+        return {**metadata, "openchamber": rest}
+    pinned: Metadata = {"at": metadata["openchamber"]["pinned"]["at"] if pin_of(metadata) else at}
+    if target != PINNED:
+        pinned["list"] = target
+    return {**metadata, "openchamber": {**rest, "pinned": pinned}}
+
+
+def merge_patch(current: Metadata, target: Metadata) -> Metadata:
+    """The JSON merge patch (RFC 7386) that turns current into target."""
+    patch: Metadata = {key: None for key in current if key not in target}
+    for key, value in target.items():
+        old = current.get(key)
+        if isinstance(value, dict) and isinstance(old, dict):
+            if inner := merge_patch(old, value):
+                patch[key] = inner
+        elif key not in current or old != value:
+            patch[key] = value
+    return patch
+
+
+def outcome(current: str | None, wanted: str | None, unpin: bool, if_unpinned: bool,
+            name: Callable[[str], str]) -> tuple[str | None, str]:
+    """The pin to have, None for none, and what to say. The same pin as current means nothing to write."""
+    if unpin:
+        if current is None:
+            return None, "not pinned"
+        if wanted is not None and current != wanted:
+            return current, f"pinned to {name(current)}, not {name(wanted)}, so left there"
+        return None, f"unpinned from {name(current)}"
+    assert wanted is not None
+    if current == wanted:
+        return current, f"already pinned to {name(current)}"
+    if current is not None and if_unpinned:
+        return current, f"left pinned to {name(current)}"
+    if current is not None:
+        return wanted, f"moved from {name(current)} to {name(wanted)}"
+    return wanted, f"pinned to {name(wanted)}"
+
+
+def list_id(lists: dict[str, str], name: str) -> str:
+    for identifier, listed in lists.items():
+        if listed.casefold() == name.strip().casefold():
+            return identifier
+    fail(f"no pin list named {name!r}. The lists: {', '.join(lists.values())}")
+
+
+def pin(chamber: OpenChamber, session: str, wanted: str | None, unpin: bool, if_unpinned: bool,
+        lists: dict[str, str]) -> str:
+    """Pin or unpin the session, retrying while its metadata changes under the write. Returns what happened."""
+    metadata = chamber.metadata(session)
+    for _ in range(ATTEMPTS):
+        current = pin_of(metadata)
+        target, said = outcome(current, wanted, unpin, if_unpinned, lambda key: lists.get(key, key))
+        if target == current:
+            return said
+        patch = merge_patch(metadata, with_pin(metadata, target, now()))
+        metadata, conflict = chamber.compare_and_set(session, metadata, patch)
+        if not conflict:
+            return said
+    raise OpenChamberError(f"{session}'s metadata kept changing while it was written, {ATTEMPTS} times")
+
+
+def main(argv: list[str] | None = None) -> int:
+    summary, details = (__doc__ or "").split("\n\n", 1)
+    ap = argparse.ArgumentParser(description=summary, epilog=details,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("list", nargs="?", metavar="LIST", help="a pin list's name, or Pinned for the plain Pinned section")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--unpin", action="store_true", help="unpin the session; with LIST, only when it's pinned there")
+    mode.add_argument("--if-unpinned", action="store_true", help="leave a session that's pinned already where it is")
+    mode.add_argument("--lists", action="store_true", help="print the pin lists' names, one a line")
+    ap.add_argument("--session", type=session_id, default=os.environ.get("OPENCODE_SESSION_ID") or None,
+                    help="the session (default: $OPENCODE_SESSION_ID)")
+    args = ap.parse_args(argv)
+    if args.lists and args.list:
+        ap.error("--lists takes no LIST")
+    if not (args.lists or args.unpin or args.list):
+        ap.error("name the pin list to pin the session to, or use --unpin or --lists")
+    if not args.lists and not args.session:
+        ap.error("no session: run it in an OpenCode session, or pass --session")
+
+    url = base_url()
+    try:
+        chamber = OpenChamber(url, ui_password(url))
+        lists = chamber.pin_lists()
+        if args.lists:
+            print("\n".join(lists.values()))
+            return 0
+        wanted = list_id(lists, args.list) if args.list else None
+        said = pin(chamber, args.session, wanted, args.unpin, args.if_unpinned, lists)
+    except OpenChamberError as error:
+        fail(str(error))
+    print(f"{args.session}: {said}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
