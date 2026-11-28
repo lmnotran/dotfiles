@@ -11,6 +11,11 @@ LIST is a pin list's name as the sidebar shows it, in any case, or Pinned for
 the plain Pinned section. The session is $OPENCODE_SESSION_ID, which OpenCode
 sets in every session's shell, unless --session names another.
 
+A session in a linked worktree sits under its worktree's row, and the
+sidebar's sections file that row by the worktree's own pin, which OpenChamber
+keeps in the branch's git config. So for such a session oc-pin pins the
+worktree, as the row's Pin to does.
+
 Only the pin changes here, but OpenChamber's sidebar then marks the session
 done, as the row menu's Pin to does, unless the Pinned section's Also in work
 is on. So an unpinned session stays out of In work until its next message.
@@ -28,6 +33,7 @@ import http.client
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import urllib.error
@@ -42,6 +48,8 @@ DEFAULT_URL: Final = "http://127.0.0.1:3000"
 # The plain Pinned section. A pin there has no list in the session's metadata.
 PINNED: Final = "pinned"
 PINNED_NAME: Final = "Pinned"
+# Where OpenChamber keeps a worktree's pin: the time it was pinned, then the list's ID unless it's Pinned.
+WORKTREE_PIN_KEY: Final = "branch.{}.openchamberPinned"
 # How often to try a write whose session metadata changed under it, as the sidebar does.
 ATTEMPTS: Final = 5
 TIMEOUT: Final = 15
@@ -139,6 +147,21 @@ class OpenChamber:
         metadata = found.get("metadata") if isinstance(found, dict) else None
         return metadata if isinstance(metadata, dict) else {}
 
+    def directory(self, session: str) -> str | None:
+        """The session's folder."""
+        _, found = self.send("GET", f"/api/session/{session}")
+        data = found.get("data") if isinstance(found, dict) else None
+        location = data.get("location") if isinstance(data, dict) else None
+        directory = location.get("directory") if isinstance(location, dict) else None
+        return directory if isinstance(directory, str) and directory else None
+
+    def set_worktree_pin(self, directory: str, target: str | None) -> None:
+        """Pin the worktree at directory to target, PINNED for the plain section, or unpin it for None."""
+        payload: Metadata = {"pinned": target is not None}
+        if target is not None and target != PINNED:
+            payload["list"] = target
+        self.send("PUT", "/api/git/worktrees/pin?directory=" + urllib.parse.quote(directory, safe=""), payload)
+
     def compare_and_set(self, session: str, expected: Metadata, patch: Metadata) -> tuple[Metadata, bool]:
         """Apply patch unless the metadata is no longer expected. Returns the metadata now, and True when it wasn't."""
         _, found = self.send("POST", f"/api/openchamber/sessions/{session}/metadata/compare-and-set",
@@ -210,6 +233,42 @@ def list_id(lists: dict[str, str], name: str) -> str:
     fail(f"no pin list named {name!r}. The lists: {', '.join(lists.values())}")
 
 
+def git(directory: str, *args: str) -> str | None:
+    """What git prints in directory, or None when it fails."""
+    try:
+        result = subprocess.run(["git", "-C", directory, *args], capture_output=True, encoding="utf-8", check=False)
+    except OSError:
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+def worktree_branch(directory: str) -> str | None:
+    """The branch of the linked worktree at directory, or None. The sidebar draws only those as worktree rows."""
+    found = git(directory, "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir", "--abbrev-ref", "HEAD")
+    lines = found.splitlines() if found else []
+    if len(lines) != 3 or lines[0] == lines[1] or lines[2] == "HEAD":
+        return None
+    return lines[2]
+
+
+def worktree_pin(directory: str, branch: str) -> str | None:
+    """The list the worktree is pinned to, PINNED for the plain section, or None. Read as OpenChamber reads it."""
+    fields = (git(directory, "config", "--get", WORKTREE_PIN_KEY.format(branch)) or "").split()
+    if not fields or not fields[0].isdigit() or int(fields[0]) == 0:
+        return None
+    return fields[1] if len(fields) > 1 else PINNED
+
+
+def pin_worktree(chamber: OpenChamber, directory: str, branch: str, wanted: str | None, unpin: bool,
+                 if_unpinned: bool, lists: dict[str, str]) -> str:
+    """Pin or unpin the worktree the session is in. Returns what happened."""
+    current = worktree_pin(directory, branch)
+    target, said = outcome(current, wanted, unpin, if_unpinned, lambda key: lists.get(key, key))
+    if target != current:
+        chamber.set_worktree_pin(directory, target)
+    return f"its worktree {branch} {said}"
+
+
 def pin(chamber: OpenChamber, session: str, wanted: str | None, unpin: bool, if_unpinned: bool,
         lists: dict[str, str]) -> str:
     """Pin or unpin the session, retrying while its metadata changes under the write. Returns what happened."""
@@ -253,7 +312,12 @@ def main(argv: list[str] | None = None) -> int:
             print("\n".join(lists.values()))
             return 0
         wanted = list_id(lists, args.list) if args.list else None
-        said = pin(chamber, args.session, wanted, args.unpin, args.if_unpinned, lists)
+        directory = chamber.directory(args.session)
+        branch = worktree_branch(directory) if directory else None
+        if directory and branch:
+            said = pin_worktree(chamber, directory, branch, wanted, args.unpin, args.if_unpinned, lists)
+        else:
+            said = pin(chamber, args.session, wanted, args.unpin, args.if_unpinned, lists)
     except OpenChamberError as error:
         fail(str(error))
     print(f"{args.session}: {said}")

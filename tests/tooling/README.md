@@ -65,7 +65,7 @@ agents, or edits a user's repo.
 | [`git-merge-check`](test_git_merge_check.py) | The real CLI in a throwaway repo: the command runs on the merge and its status comes back, conflicts, the default base and branch, `--keep`, skipped checkout hooks, cleanup, and usage errors. |
 | [`oc-session-purge`](test_session_purge.py) | Session selection, ID validation, dry runs, file removal, and database failures. |
 | [`oc-session-pending`](test_session_pending.py) | Running tool calls: a card's title and the choices in its openui-lang, an HTML card's text, questions, and other tools' input on one line. Queued messages in order, the note about cards, JSON output, the read-only database and its default path, unknown sessions, and missing tables. |
-| [`oc-pin`](test_pin.py) | Pins, moves and unpins written as the sidebar writes them, with In work left alone. Pins that are already right, `--if-unpinned`, `--unpin LIST`, writes tried again when the metadata changes under them, unknown lists, the UI password and address from the running instance, a refused password, and usage errors. |
+| [`oc-pin`](test_pin.py) | Pins, moves and unpins written as the sidebar writes them, with In work left alone. Pins that are already right, `--if-unpinned`, `--unpin LIST`, writes tried again when the metadata changes under them, unknown lists, the UI password and address from the running instance, a refused password, and usage errors. A session in a linked worktree pins the worktree, and one in a main checkout, a detached worktree or no repository pins itself. |
 | [`chamberctl`](test_chamberctl.py) | Real CLI help and unknown commands. Systemd calls aren't tested. |
 
 The linked test files list the individual cases.

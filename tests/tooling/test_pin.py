@@ -1,6 +1,7 @@
 import email.message
 import io
 import json
+import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -21,6 +22,8 @@ REVIEW: Final = "sreview"
 LISTS: Final = [{"id": REVIEW, "name": "Needs review"}, {"id": TEAMS, "name": "Send in Teams"}]
 WORK: Final = {"state": "open", "openedAt": EARLIER, "openedBy": "auto"}
 METADATA_PATH: Final = f"/api/openchamber/sessions/{SESSION}/metadata"
+WORKTREE: Final = "/home/me/repos/app-worktrees/ABC-1"
+BRANCH: Final = "feature/ABC-1-thing"
 
 
 def merged(current: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
@@ -45,12 +48,17 @@ class Response(io.BytesIO):
 
 
 class FakeChamber:
-    """OpenChamber's login, settings and session metadata routes, in memory."""
+    """OpenChamber's login, settings, session and worktree pin routes, in memory."""
 
-    def __init__(self, metadata: dict[str, Any], races: tuple[dict[str, Any], ...] = ()) -> None:
+    def __init__(self, metadata: dict[str, Any], races: tuple[dict[str, Any], ...] = (),
+                 directory: str | None = None, worktree_pin: str = "") -> None:
         self.metadata = metadata
         # Patches another writer lands just before each of the next compare-and-sets.
         self.races = list(races)
+        self.directory = directory
+        # The worktree's pin as its branch's git config holds it: "<at> <list>", "<at>" for Pinned, "" for none.
+        self.worktree_pin = worktree_pin
+        self.worktree_writes: list[tuple[str, Any]] = []
         self.calls: list[tuple[str, str, Any]] = []
 
     def urlopen(self, request: urllib.request.Request, timeout: float) -> Response:
@@ -65,6 +73,16 @@ class FakeChamber:
         assert request.get_header("Cookie") == COOKIE
         if url.path == "/api/config/settings":
             return Response({"sidebarPinLists": LISTS, "sidebarSections": []})
+        if url.path == f"/api/session/{SESSION}":
+            location = {"location": {"directory": self.directory}} if self.directory else {}
+            return Response({"data": {"id": SESSION, **location}})
+        if url.path == "/api/git/worktrees/pin":
+            assert request.get_method() == "PUT"
+            self.worktree_writes.append((urllib.parse.parse_qs(url.query)["directory"][0], body))
+            # A pin that moves keeps the time it was made, as OpenChamber's server does.
+            at = self.worktree_pin.split()[0] if self.worktree_pin else str(NOW)
+            self.worktree_pin = (f"{at} {body['list']}" if body.get("list") else at) if body["pinned"] else ""
+            return Response({"pinned": body["pinned"], "branch": BRANCH})
         if url.path == METADATA_PATH:
             return Response({"metadata": self.metadata})
         assert url.path == METADATA_PATH + "/compare-and-set"
@@ -90,10 +108,25 @@ def pin(tool: Callable[[str], ModuleType], monkeypatch: pytest.MonkeyPatch) -> M
     return module
 
 
-def serve(monkeypatch: pytest.MonkeyPatch, metadata: dict[str, Any], races: tuple[dict[str, Any], ...] = ()) -> FakeChamber:
-    chamber = FakeChamber(metadata, races)
+def serve(monkeypatch: pytest.MonkeyPatch, metadata: dict[str, Any], races: tuple[dict[str, Any], ...] = (),
+          directory: str | None = None, worktree_pin: str = "") -> FakeChamber:
+    chamber = FakeChamber(metadata, races, directory, worktree_pin)
     monkeypatch.setattr(urllib.request, "urlopen", chamber.urlopen)
     return chamber
+
+
+def in_checkout(monkeypatch: pytest.MonkeyPatch, chamber: FakeChamber, git_dir: str = "/repo/.git/worktrees/ABC-1",
+                branch: str = BRANCH, returncode: int = 0) -> None:
+    """git in WORKTREE answers as a checkout of /repo, reading the branch's pin from the fake chamber."""
+    def git(argv: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
+        assert argv[:3] == ["git", "-C", WORKTREE]
+        if argv[3] == "rev-parse":
+            return subprocess.CompletedProcess(argv, returncode, stdout=f"{git_dir}\n/repo/.git\n{branch}\n" if returncode == 0 else "")
+        assert argv[3:] == ["config", "--get", f"branch.{branch}.openchamberPinned"]
+        pinned = chamber.worktree_pin
+        return subprocess.CompletedProcess(argv, 0 if pinned else 1, stdout=f"{pinned}\n" if pinned else "")
+
+    monkeypatch.setattr(subprocess, "run", git)
 
 
 def run(pin: ModuleType, *argv: str) -> int:
@@ -163,6 +196,70 @@ def test_unpins_the_session(pin: ModuleType, monkeypatch: pytest.MonkeyPatch, ca
     assert capsys.readouterr().out == f"{SESSION}: unpinned from Send in Teams\n"
     assert chamber.writes() == [{"openchamber": {"pinned": None}}]
     assert chamber.metadata == {"openchamber": {"work": WORK}}
+
+
+@pytest.mark.parametrize("argv,stored,write,said", [
+    (("send in teams",), "", {"pinned": True, "list": TEAMS}, "pinned to Send in Teams"),
+    (("Pinned",), "", {"pinned": True}, "pinned to Pinned"),
+    (("Send in Teams",), f"{EARLIER} {REVIEW}", {"pinned": True, "list": TEAMS}, "moved from Needs review to Send in Teams"),
+    (("--unpin", "Send in Teams"), f"{EARLIER} {TEAMS}", {"pinned": False}, "unpinned from Send in Teams"),
+    (("--unpin",), str(EARLIER), {"pinned": False}, "unpinned from Pinned"),
+])
+def test_a_session_in_a_linked_worktree_pins_the_worktree(
+        pin: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+        argv: tuple[str, ...], stored: str, write: dict[str, Any], said: str) -> None:
+    # Given
+    chamber = serve(monkeypatch, {"openchamber": {"work": WORK}}, directory=WORKTREE, worktree_pin=stored)
+    in_checkout(monkeypatch, chamber)
+    # When
+    code = run(pin, *argv)
+    # Then
+    assert code == 0
+    assert capsys.readouterr().out == f"{SESSION}: its worktree {BRANCH} {said}\n"
+    assert chamber.worktree_writes == [(WORKTREE, write)]
+    assert chamber.writes() == []
+
+
+@pytest.mark.parametrize("argv,stored,said", [
+    (("Send in Teams",), f"{EARLIER} {TEAMS}", "already pinned to Send in Teams"),
+    (("--if-unpinned", "Send in Teams"), f"{EARLIER} {REVIEW}", "left pinned to Needs review"),
+    (("--unpin", "Send in Teams"), f"{EARLIER} {REVIEW}", "pinned to Needs review, not Send in Teams, so left there"),
+    (("--unpin",), "", "not pinned"),
+])
+def test_writes_nothing_when_the_worktree_pin_is_already_right(
+        pin: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+        argv: tuple[str, ...], stored: str, said: str) -> None:
+    # Given
+    chamber = serve(monkeypatch, {"openchamber": {"pinned": {"at": EARLIER, "list": TEAMS}}},
+                    directory=WORKTREE, worktree_pin=stored)
+    in_checkout(monkeypatch, chamber)
+    # When
+    code = run(pin, *argv)
+    # Then
+    assert code == 0
+    assert capsys.readouterr().out == f"{SESSION}: its worktree {BRANCH} {said}\n"
+    assert chamber.worktree_writes == []
+    assert chamber.writes() == []
+
+
+@pytest.mark.parametrize("git_dir,branch,returncode", [
+    ("/repo/.git", "main", 0),
+    ("/repo/.git/worktrees/ABC-1", "HEAD", 0),
+    ("", "", 128),
+])
+def test_a_main_checkout_a_detached_worktree_or_no_repository_pins_the_session(
+        pin: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+        git_dir: str, branch: str, returncode: int) -> None:
+    # Given
+    chamber = serve(monkeypatch, {}, directory=WORKTREE)
+    in_checkout(monkeypatch, chamber, git_dir, branch, returncode)
+    # When
+    code = run(pin, "Send in Teams")
+    # Then
+    assert code == 0
+    assert capsys.readouterr().out == f"{SESSION}: pinned to Send in Teams\n"
+    assert chamber.writes() == [{"openchamber": {"pinned": {"at": NOW, "list": TEAMS}}}]
+    assert chamber.worktree_writes == []
 
 
 def test_writes_again_when_the_metadata_changed_under_it(pin: ModuleType, monkeypatch: pytest.MonkeyPatch,
