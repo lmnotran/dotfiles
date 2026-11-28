@@ -3,6 +3,11 @@
   "$schema": "https://opencode.ai/config.json",
   "default_agent": "mason",
   "instructions": ["~/.claude/CLAUDE.md"],
+  // The same subagent models as allston-st. agent/ holds the fact-check and reviewer subagents.
+  "agents": {
+    "general": { "model": "github-copilot/claude-sonnet-5.5#high" },
+    "explore": { "model": "github-copilot/gemini-4-neon#high" }
+  },
   "permission": {
     "external_directory": {
       "/tmp": "allow",
